@@ -1,5 +1,10 @@
 // Tipos para el módulo de autenticación
 
+export interface SedeAsignada {
+  id: number;
+  nombre: string;
+}
+
 export interface Usuario {
   id: number;
   username: string;
@@ -16,6 +21,7 @@ export interface Usuario {
 export interface UsuarioConRol extends Usuario {
   rol_nombre: string;
   rol_descripcion: string;
+  sedes?: SedeAsignada[];
 }
 
 export interface LoginCredentials {
@@ -53,6 +59,7 @@ export interface CreateUserRequest {
   apellidos: string;
   rol_id: number;
   firma_url?: string;
+  sede_ids?: number[];
 }
 
 export interface UpdateUserRequest {
@@ -63,6 +70,7 @@ export interface UpdateUserRequest {
   rol_id?: number;
   firma_url?: string;
   activo?: boolean;
+  sede_ids?: number[];
 }
 
 export interface Permiso {

@@ -30,9 +30,11 @@ export class SedesController {
 
   async create(req: Request, res: Response): Promise<void> {
     try {
+      console.log('📝 [SEDES] Creando sede con datos:', req.body);
       const sede = await sedesService.create(req.body);
       successResponse(res, sede, 'Sede creada exitosamente', 201);
-    } catch (error) {
+    } catch (error: any) {
+      console.error('❌ [SEDES] Error al crear sede:', error.message);
       errorResponse(res, 'Error al crear sede', error);
     }
   }

@@ -4,12 +4,13 @@ import { z } from 'zod';
 export const createPacienteSchema = z.object({
   dni: z.string().length(8, 'El DNI debe tener 8 dígitos').regex(/^\d+$/, 'El DNI debe contener solo números'),
   nombres: z.string().min(1, 'Los nombres son requeridos').max(100),
-  apellidos: z.string().min(1, 'Los apellidos son requeridos').max(100),
+  apellido_paterno: z.string().min(1, 'El apellido paterno es requerido').max(100),
+  apellido_materno: z.string().min(1, 'El apellido materno es requerido').max(100),
   fecha_nacimiento: z.string().refine((date) => !isNaN(Date.parse(date)), 'Fecha inválida'),
-  sexo: z.enum(['M', 'F'], { message: 'El sexo debe ser M o F' }),
-  telefono: z.string().max(20).optional(),
-  email: z.string().email('Email inválido').optional(),
-  direccion: z.string().max(255).optional(),
+  genero: z.enum(['M', 'F'], { message: 'El género debe ser M o F' }),
+  telefono: z.string().max(20).optional().nullable(),
+  email: z.string().email('Email inválido').optional().nullable(),
+  direccion: z.string().max(255).optional().nullable(),
 });
 
 // ORDEN
@@ -19,8 +20,12 @@ export const createOrdenSchema = z.object({
     sede_id: z.number().int().positive('La sede es requerida'),
     tipo_cliente_id: z.number().int().positive('El tipo de cliente es requerido'),
     convenio_id: z.number().int().positive().optional(),
-    analisis_ids: z.array(z.number().int().positive()).min(1, 'Debe seleccionar al menos un análisis'),
-    observaciones: z.string().max(500).optional(),
+    analisis: z.array(z.object({
+      id: z.number().int().positive(),
+      muestras_ids: z.array(z.number().int().positive()).optional(),
+    })).min(1, 'Debe seleccionar al menos un análisis'),
+    nota: z.string().max(500).optional(),
+    medico: z.string().max(255).optional(),
   }),
 });
 
@@ -40,12 +45,16 @@ export const getOrdenByIdSchema = z.object({
   params: z.object({
     id: z.string().regex(/^\d+$/, 'ID debe ser un número'),
   }),
+  body: z.any().optional(),
+  query: z.any().optional(),
 });
 
 export const deleteOrdenSchema = z.object({
   params: z.object({
     id: z.string().regex(/^\d+$/, 'ID debe ser un número'),
   }),
+  body: z.any().optional(),
+  query: z.any().optional(),
 });
 
 export const updateEstadoOrdenSchema = z.object({

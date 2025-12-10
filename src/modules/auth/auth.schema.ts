@@ -20,6 +20,7 @@ export const createUserSchema = z.object({
   apellidos: z.string().min(2, 'Los apellidos son requeridos').max(100),
   rol_id: z.number().int().positive('El rol es requerido'),
   firma_url: z.string().optional(),
+  sede_ids: z.array(z.number().int().positive()).optional(),
 });
 
 // Schema para actualizar usuario
@@ -31,6 +32,7 @@ export const updateUserSchema = z.object({
   rol_id: z.number().int().positive('El rol es requerido').optional(),
   firma_url: z.string().optional(),
   activo: z.boolean().optional(),
+  sede_ids: z.array(z.number().int().positive()).optional(),
 });
 
 // Tipos inferidos de los schemas

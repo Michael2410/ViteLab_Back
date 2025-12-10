@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { resultadosController } from './resultados.controller';
 import { validate } from '../../middleware/validate.middleware';
+import { authenticate } from '../../middleware/auth.middleware';
 import {
   createResultadoSchema,
   bulkResultadosSchema,
@@ -12,6 +13,99 @@ import {
 } from './resultados.schema';
 
 const router = Router();
+
+// Aplicar autenticación a todas las rutas de resultados
+router.use(authenticate);
+
+/**
+ * @swagger
+ * /api/resultados/ordenes-pendientes:
+ *   get:
+ *     summary: Obtener órdenes en estado REGISTRADA con muestra recepcionada para ingresar resultados
+ *     tags: [Resultados]
+ *     responses:
+ *       200:
+ *         description: Lista de órdenes pendientes
+ */
+router.get(
+  '/ordenes-pendientes',
+  resultadosController.getOrdenesParaResultados.bind(resultadosController)
+);
+
+/**
+ * @swagger
+ * /api/resultados/ordenes-pendientes-aprobacion:
+ *   get:
+ *     summary: Obtener órdenes en estado CON_RESULTADOS pendientes de aprobación
+ *     tags: [Resultados]
+ *     responses:
+ *       200:
+ *         description: Lista de órdenes pendientes de aprobación
+ */
+router.get(
+  '/ordenes-pendientes-aprobacion',
+  resultadosController.getOrdenesPendientesAprobacion.bind(resultadosController)
+);
+
+/**
+ * @swagger
+ * /api/resultados/orden/{ordenId}/guardar:
+ *   post:
+ *     summary: Guardar resultados sin aprobar
+ *     tags: [Resultados]
+ *     parameters:
+ *       - in: path
+ *         name: ordenId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               resultados:
+ *                 type: array
+ *     responses:
+ *       200:
+ *         description: Resultados guardados
+ */
+router.post(
+  '/orden/:ordenId/guardar',
+  resultadosController.guardarResultados.bind(resultadosController)
+);
+
+/**
+ * @swagger
+ * /api/resultados/orden/{ordenId}/aprobar:
+ *   post:
+ *     summary: Aprobar orden (guardar resultados y cambiar estado a APROBADA)
+ *     tags: [Resultados]
+ *     parameters:
+ *       - in: path
+ *         name: ordenId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               resultados:
+ *                 type: array
+ *     responses:
+ *       200:
+ *         description: Orden aprobada
+ */
+router.post(
+  '/orden/:ordenId/aprobar',
+  resultadosController.aprobarOrden.bind(resultadosController)
+);
 
 /**
  * @swagger

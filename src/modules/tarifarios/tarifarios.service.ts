@@ -31,7 +31,6 @@ export class TarifariosService {
         tp.id,
         tp.analisis_id,
         a.nombre as analisis_nombre,
-        a.codigo as analisis_codigo,
         tp.precio
       FROM tarifario_precios tp
       INNER JOIN analisis a ON tp.analisis_id = a.id

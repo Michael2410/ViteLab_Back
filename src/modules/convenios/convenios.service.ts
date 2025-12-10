@@ -28,8 +28,8 @@ export class ConveniosService {
 
   async create(data: CreateConvenioInput): Promise<Convenio> {
     const result = await pool.query(
-      'INSERT INTO convenios (nombre_empresa, ruc, direccion, telefono, email, tarifario_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [data.nombre_empresa, data.ruc, data.direccion, data.telefono, data.email, data.tarifario_id]
+      'INSERT INTO convenios (nombre_empresa, ruc, direccion, telefono, email, tarifario_id, logo_url) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [data.nombre_empresa, data.ruc, data.direccion, data.telefono, data.email, data.tarifario_id, data.logo_url]
     );
     return result.rows[0];
   }
@@ -62,6 +62,10 @@ export class ConveniosService {
     if (data.tarifario_id !== undefined) {
       fields.push(`tarifario_id = $${paramCount++}`);
       values.push(data.tarifario_id);
+    }
+    if (data.logo_url !== undefined) {
+      fields.push(`logo_url = $${paramCount++}`);
+      values.push(data.logo_url);
     }
     if (data.activo !== undefined) {
       fields.push(`activo = $${paramCount++}`);

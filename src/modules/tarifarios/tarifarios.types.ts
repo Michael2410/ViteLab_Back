@@ -40,7 +40,6 @@ export interface TarifarioWithPrecios extends Tarifario {
     id: number;
     analisis_id: number;
     analisis_nombre: string;
-    analisis_codigo: string;
     precio: number;
   }>;
 }

@@ -60,12 +60,16 @@ export const getResultadoByIdSchema = z.object({
   params: z.object({
     id: z.string().regex(/^\d+$/, 'ID debe ser un número'),
   }),
+  body: z.any().optional(),
+  query: z.any().optional(),
 });
 
 export const getResultadosByOrdenSchema = z.object({
   params: z.object({
     ordenId: z.string().regex(/^\d+$/, 'ID de orden debe ser un número'),
   }),
+  body: z.any().optional(),
+  query: z.any().optional(),
 });
 
 export const getResultadosFilterSchema = z.object({

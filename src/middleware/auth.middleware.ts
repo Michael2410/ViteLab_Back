@@ -70,8 +70,9 @@ export const authenticateToken = async (
 /**
  * Middleware para verificar permisos específicos
  * @param requiredPermissions Array de códigos de permisos requeridos
+ * @param requireAll Si es true, requiere TODOS los permisos. Si es false, requiere AL MENOS UNO
  */
-export const requirePermissions = (requiredPermissions: string[]) => {
+export const requirePermissions = (requiredPermissions: string[], requireAll: boolean = true) => {
   return async (req: Request, res: Response, next: NextFunction): Promise<void | Response> => {
     try {
       if (!req.user) {
@@ -89,10 +90,19 @@ export const requirePermissions = (requiredPermissions: string[]) => {
       const result = await pool.query(permissionsQuery, [req.user.rolId]);
       const userPermissions = result.rows.map((row: any) => row.codigo);
 
-      // Verificar si tiene todos los permisos requeridos
-      const hasPermissions = requiredPermissions.every((permission) =>
-        userPermissions.includes(permission)
-      );
+      // Verificar permisos
+      let hasPermissions: boolean;
+      if (requireAll) {
+        // Requiere TODOS los permisos
+        hasPermissions = requiredPermissions.every((permission) =>
+          userPermissions.includes(permission)
+        );
+      } else {
+        // Requiere AL MENOS UNO de los permisos
+        hasPermissions = requiredPermissions.some((permission) =>
+          userPermissions.includes(permission)
+        );
+      }
 
       if (!hasPermissions) {
         return errorResponse(res, 'No tienes permisos para realizar esta acción', null, 403);
@@ -103,6 +113,14 @@ export const requirePermissions = (requiredPermissions: string[]) => {
       return errorResponse(res, 'Error al verificar permisos', null, 500);
     }
   };
+};
+
+/**
+ * Middleware para verificar un solo permiso
+ * @param permission Código del permiso requerido
+ */
+export const requirePermission = (permission: string) => {
+  return requirePermissions([permission], true);
 };
 
 /**

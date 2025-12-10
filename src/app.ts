@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';
+import path from 'path';
 import { errorHandler } from './utils/response.utils';
 
 // Importar rutas de módulos
@@ -17,6 +18,11 @@ import tarifariosRoutes from './modules/tarifarios/tarifarios.routes';
 import conveniosRoutes from './modules/convenios/convenios.routes';
 import ordenesRoutes from './modules/ordenes/ordenes.routes';
 import resultadosRoutes from './modules/resultados/resultados.routes';
+import muestrasRoutes from './modules/muestras/muestras.routes';
+import uploadsRoutes from './modules/uploads/uploads.routes';
+import sistemaRoutes from './modules/sistema/sistema.routes';
+import reportesRoutes from './modules/reportes/reportes.routes';
+import rolesRoutes from './modules/roles/roles.routes';
 
 dotenv.config();
 
@@ -35,6 +41,9 @@ app.use(cors({
 // Body parser
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Servir archivos estáticos (uploads)
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Logs de requests (solo en desarrollo)
 if (process.env.NODE_ENV === 'development') {
@@ -116,6 +125,7 @@ app.use('/api/analisis', analisisRoutes);
 app.use('/api/componentes', componentesRoutes);
 app.use('/api/tarifarios', tarifariosRoutes);
 app.use('/api/convenios', conveniosRoutes);
+app.use('/api/muestras', muestrasRoutes);
 
 // Módulo de Órdenes
 app.use('/api/ordenes', ordenesRoutes);
@@ -123,7 +133,17 @@ app.use('/api/ordenes', ordenesRoutes);
 // Módulo de Resultados
 app.use('/api/resultados', resultadosRoutes);
 
-// app.use('/api/settings', settingsRoutes); // Se agregará después
+// Módulo de Uploads
+app.use('/api/uploads', uploadsRoutes);
+
+// Módulo de Sistema (Configuración)
+app.use('/api/sistema', sistemaRoutes);
+
+// Módulo de Reportes
+app.use('/api/reportes', reportesRoutes);
+
+// Módulo de Roles y Permisos
+app.use('/api/roles', rolesRoutes);
 
 // ============================================
 // ERROR HANDLING

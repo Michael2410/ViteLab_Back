@@ -84,16 +84,19 @@ export class AuthController {
    * POST /api/auth/users
    */
   createUser = asyncHandler(async (req: Request, res: Response) => {
+    console.log('📝 [CREATE USER] Body recibido:', req.body);
     const validation = createUserSchema.safeParse(req.body);
 
     if (!validation.success) {
-      return errorResponse(res, 'Error de validación', validation.error.errors, 400);
+      console.log('❌ [CREATE USER] Error de validación:', validation.error.issues);
+      return errorResponse(res, 'Error de validación', validation.error.issues, 400);
     }
 
     try {
       const user = await authService.createUser(validation.data);
       return successResponse(res, user, 'Usuario creado exitosamente', 201);
     } catch (error: any) {
+      console.log('❌ [CREATE USER] Error:', error.message);
       return errorResponse(res, error.message, null, 400);
     }
   });
@@ -141,7 +144,7 @@ export class AuthController {
     const validation = updateUserSchema.safeParse(req.body);
 
     if (!validation.success) {
-      return errorResponse(res, 'Error de validación', validation.error.errors, 400);
+      return errorResponse(res, 'Error de validación', validation.error.issues, 400);
     }
 
     try {
@@ -167,6 +170,18 @@ export class AuthController {
       return successResponse(res, null, 'Usuario eliminado exitosamente', 200);
     } catch (error: any) {
       return errorResponse(res, error.message, null, 404);
+    }
+  });
+
+  /**
+   * GET /api/auth/roles
+   */
+  getAllRoles = asyncHandler(async (req: Request, res: Response) => {
+    try {
+      const roles = await authService.getAllRoles();
+      return successResponse(res, roles, 'Roles obtenidos exitosamente', 200);
+    } catch (error: any) {
+      return errorResponse(res, error.message, null, 500);
     }
   });
 }

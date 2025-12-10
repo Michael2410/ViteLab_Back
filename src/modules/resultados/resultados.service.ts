@@ -1,4 +1,5 @@
 import pool from '../../config/database';
+import { iaService, type OrdenParaIA, type AnalisisParaIA } from '../ia/ia.service';
 import type {
   ResultadoDetalle,
   CreateResultadoInput,
@@ -100,7 +101,7 @@ class ResultadosService {
     try {
       await client.query('BEGIN');
 
-      // Verificar que la orden existe y está en estado REGISTRADA
+      // Verificar que la orden existe y está en estado válido para ingresar resultados
       const ordenCheck = await client.query(
         `SELECT id, estado FROM ordenes WHERE id = $1`,
         [data.orden_id]
@@ -110,8 +111,9 @@ class ResultadosService {
         throw new Error('La orden no existe');
       }
 
-      if (ordenCheck.rows[0].estado !== 'REGISTRADA') {
-        throw new Error('Solo se pueden ingresar resultados en órdenes REGISTRADAS');
+      const estadosPermitidos = ['REGISTRADA', 'MUESTRA_RECIBIDA'];
+      if (!estadosPermitidos.includes(ordenCheck.rows[0].estado)) {
+        throw new Error('Solo se pueden ingresar resultados en órdenes REGISTRADAS o con MUESTRA_RECIBIDA');
       }
 
       const resultadosCreados: ResultadoDetalle[] = [];
@@ -162,11 +164,9 @@ class ResultadosService {
         await client.query(
           `UPDATE ordenes 
            SET estado = 'CON_RESULTADOS', 
-               fecha_resultados = NOW(),
-               usuario_resultados_id = $1,
                updated_at = NOW()
-           WHERE id = $2`,
-          [usuarioId, data.orden_id]
+           WHERE id = $1`,
+          [data.orden_id]
         );
       }
 
@@ -193,11 +193,10 @@ class ResultadosService {
       SELECT 
         r.*,
         c.nombre as componente_nombre,
-        c.codigo as componente_codigo,
         oa.orden_id,
-        o.numero_orden,
+        o.numero_atencion,
         a.nombre as analisis_nombre,
-        u.nombre as usuario_registro_nombre
+        u.nombres as usuario_registro_nombre
       FROM resultados r
       INNER JOIN componentes c ON r.componente_id = c.id
       INNER JOIN orden_analisis oa ON r.orden_analisis_id = oa.id
@@ -247,11 +246,10 @@ class ResultadosService {
       SELECT 
         r.*,
         c.nombre as componente_nombre,
-        c.codigo as componente_codigo,
         oa.orden_id,
-        o.numero_orden,
+        o.numero_atencion,
         a.nombre as analisis_nombre,
-        u.nombre as usuario_registro_nombre
+        u.nombres as usuario_registro_nombre
       FROM resultados r
       INNER JOIN componentes c ON r.componente_id = c.id
       INNER JOIN orden_analisis oa ON r.orden_analisis_id = oa.id
@@ -271,17 +269,37 @@ class ResultadosService {
   // ============================================
 
   async getOrdenConResultados(ordenId: number): Promise<OrdenConResultados> {
-    // Obtener datos básicos de la orden
+    // Obtener datos básicos de la orden con información completa
     const ordenQuery = `
       SELECT 
         o.id,
-        o.numero_orden,
+        o.numero_atencion,
+        o.estado,
         o.fecha_registro,
+        o.fecha_aprobacion,
+        o.medico,
+        o.usuario_aprobacion_id,
+        o.interpretacion_ia,
         p.nombres as paciente_nombres,
-        p.apellidos as paciente_apellidos,
-        p.dni as paciente_dni
+        p.apellido_paterno,
+        p.apellido_materno,
+        p.dni as paciente_dni,
+        p.genero as paciente_genero,
+        p.fecha_nacimiento as paciente_fecha_nacimiento,
+        s.nombre as sede_nombre,
+        tc.nombre as tipo_cliente_nombre,
+        c.nombre_empresa as convenio_nombre,
+        c.direccion as convenio_direccion,
+        c.logo_url as convenio_logo_url,
+        uapro.nombres as aprobado_por_nombres,
+        uapro.apellidos as aprobado_por_apellidos,
+        uapro.firma_url as aprobado_por_firma_url
       FROM ordenes o
       INNER JOIN pacientes p ON o.paciente_id = p.id
+      INNER JOIN sedes s ON o.sede_id = s.id
+      INNER JOIN tipos_cliente tc ON o.tipo_cliente_id = tc.id
+      LEFT JOIN convenios c ON o.convenio_id = c.id
+      LEFT JOIN usuarios uapro ON o.usuario_aprobacion_id = uapro.id
       WHERE o.id = $1
     `;
 
@@ -291,71 +309,87 @@ class ResultadosService {
       throw new Error('Orden no encontrada');
     }
 
-    const orden = ordenResult.rows[0];
+    const ordenRow = ordenResult.rows[0];
+    const orden = {
+      ...ordenRow,
+      paciente_apellidos: `${ordenRow.apellido_paterno} ${ordenRow.apellido_materno}`
+    };
 
-    // Obtener análisis con sus componentes y resultados
+    // Obtener análisis de la orden con sus componentes
+    // Los componentes están vinculados a analisis mediante analisis.componentes_ids (array)
+    // Nota: analisis no tiene area_id, el área está en los componentes
     const analisisQuery = `
       SELECT 
         oa.id as orden_analisis_id,
         oa.analisis_id,
-        a.codigo as analisis_codigo,
         a.nombre as analisis_nombre,
-        c.id as componente_id,
-        c.codigo as componente_codigo,
-        c.nombre as componente_nombre,
-        c.unidad_medida,
-        c.valor_referencia_min,
-        c.valor_referencia_max,
-        c.valor_referencia_texto,
-        r.id as resultado_id,
-        r.valor as resultado_valor,
-        r.observaciones as resultado_observaciones
+        a.componentes_ids
       FROM orden_analisis oa
       INNER JOIN analisis a ON oa.analisis_id = a.id
-      LEFT JOIN componentes c ON c.analisis_id = a.id
-      LEFT JOIN resultados r ON r.orden_analisis_id = oa.id AND r.componente_id = c.id
       WHERE oa.orden_id = $1
-      ORDER BY a.nombre, c.orden
+      ORDER BY a.nombre
     `;
 
     const analisisResult = await pool.query(analisisQuery, [ordenId]);
 
-    // Agrupar por análisis
-    const analisisMap = new Map<number, AnalisisConComponentes>();
+    const analisisList: AnalisisConComponentes[] = [];
 
-    for (const row of analisisResult.rows) {
-      if (!analisisMap.has(row.analisis_id)) {
-        analisisMap.set(row.analisis_id, {
-          orden_analisis_id: row.orden_analisis_id,
-          analisis_id: row.analisis_id,
-          analisis_codigo: row.analisis_codigo,
-          analisis_nombre: row.analisis_nombre,
-          componentes: [],
-        });
-      }
-
-      const analisis = analisisMap.get(row.analisis_id)!;
-
-      if (row.componente_id) {
-        analisis.componentes.push({
+    for (const analisisRow of analisisResult.rows) {
+      const componentesIds = analisisRow.componentes_ids || [];
+      
+      // Obtener componentes de este análisis
+      let componentes: any[] = [];
+      if (componentesIds.length > 0) {
+        const componentesQuery = `
+          SELECT 
+            c.id as componente_id,
+            c.nombre as componente_nombre,
+            c.unidad_medida,
+            c.valores_referenciales,
+            c.valor_alerta_min,
+            c.valor_alerta_max,
+            m.nombre as metodo_nombre,
+            r.id as resultado_id,
+            r.resultado as resultado_valor,
+            r.observacion as resultado_observaciones
+          FROM componentes c
+          LEFT JOIN metodos m ON c.metodo_id = m.id
+          LEFT JOIN resultados r ON r.componente_id = c.id AND r.orden_analisis_id = $1
+          WHERE c.id = ANY($2) AND c.activo = true
+          ORDER BY array_position($2, c.id)
+        `;
+        
+        const componentesResult = await pool.query(componentesQuery, [
+          analisisRow.orden_analisis_id,
+          componentesIds
+        ]);
+        
+        componentes = componentesResult.rows.map(row => ({
           componente_id: row.componente_id,
-          componente_codigo: row.componente_codigo,
           componente_nombre: row.componente_nombre,
           unidad_medida: row.unidad_medida,
-          valor_referencia_min: row.valor_referencia_min,
-          valor_referencia_max: row.valor_referencia_max,
-          valor_referencia_texto: row.valor_referencia_texto,
+          valores_referenciales: row.valores_referenciales || [],
+          valor_alerta_min: row.valor_alerta_min ? parseFloat(row.valor_alerta_min) : null,
+          valor_alerta_max: row.valor_alerta_max ? parseFloat(row.valor_alerta_max) : null,
+          metodo_nombre: row.metodo_nombre,
           resultado_id: row.resultado_id,
           resultado_valor: row.resultado_valor,
           resultado_observaciones: row.resultado_observaciones,
           tiene_resultado: row.resultado_id !== null,
-        });
+        }));
       }
+
+      analisisList.push({
+        orden_analisis_id: analisisRow.orden_analisis_id,
+        analisis_id: analisisRow.analisis_id,
+        analisis_nombre: analisisRow.analisis_nombre,
+        componentes,
+      });
     }
 
     return {
       ...orden,
-      analisis: Array.from(analisisMap.values()),
+      analisis: analisisList,
     };
   }
 
@@ -421,6 +455,324 @@ class ResultadosService {
 
     if (result.rowCount === 0) {
       throw new Error('Resultado no encontrado');
+    }
+  }
+
+  // ============================================
+  // OBTENER ÓRDENES PARA INGRESO DE RESULTADOS
+  // (estado MUESTRA_RECIBIDA o REGISTRADA con muestra_recepcionada)
+  // ============================================
+
+  async getOrdenesParaResultados(sedeIds?: number[]): Promise<any[]> {
+    let query = `
+      SELECT 
+        o.id,
+        o.numero_atencion,
+        o.estado,
+        o.fecha_registro,
+        o.fecha_recepcion,
+        o.muestra_recepcionada,
+        p.dni as paciente_dni,
+        p.nombres as paciente_nombres,
+        p.apellido_paterno,
+        p.apellido_materno,
+        s.nombre as sede_nombre,
+        (SELECT COUNT(*) FROM orden_analisis WHERE orden_id = o.id) as total_analisis
+      FROM ordenes o
+      INNER JOIN pacientes p ON o.paciente_id = p.id
+      INNER JOIN sedes s ON o.sede_id = s.id
+      WHERE (o.estado = 'MUESTRA_RECIBIDA' 
+         OR (o.estado = 'REGISTRADA' AND o.muestra_recepcionada = true))
+    `;
+    
+    const params: any[] = [];
+    
+    // Filtrar por sedes del usuario si tiene asignadas
+    if (sedeIds && sedeIds.length > 0) {
+      params.push(sedeIds);
+      query += ` AND o.sede_id = ANY($${params.length}::int[])`;
+    }
+    
+    query += ` ORDER BY o.fecha_registro DESC`;
+
+    const result = await pool.query(query, params);
+    
+    return result.rows.map(row => ({
+      ...row,
+      paciente_apellidos: `${row.apellido_paterno} ${row.apellido_materno}`
+    }));
+  }
+
+  // ============================================
+  // OBTENER ÓRDENES PENDIENTES DE APROBACIÓN (estado = CON_RESULTADOS)
+  // ============================================
+
+  async getOrdenesPendientesAprobacion(sedeIds?: number[]): Promise<any[]> {
+    let query = `
+      SELECT 
+        o.id,
+        o.numero_atencion,
+        o.estado,
+        o.fecha_registro,
+        o.muestra_recepcionada,
+        p.dni as paciente_dni,
+        p.nombres as paciente_nombres,
+        p.apellido_paterno,
+        p.apellido_materno,
+        s.nombre as sede_nombre,
+        (SELECT COUNT(*) FROM orden_analisis WHERE orden_id = o.id) as total_analisis
+      FROM ordenes o
+      INNER JOIN pacientes p ON o.paciente_id = p.id
+      INNER JOIN sedes s ON o.sede_id = s.id
+      WHERE o.estado = 'CON_RESULTADOS'
+    `;
+    
+    const params: any[] = [];
+    
+    // Filtrar por sedes del usuario si tiene asignadas
+    if (sedeIds && sedeIds.length > 0) {
+      params.push(sedeIds);
+      query += ` AND o.sede_id = ANY($${params.length}::int[])`;
+    }
+    
+    query += ` ORDER BY o.fecha_registro DESC`;
+
+    const result = await pool.query(query, params);
+    
+    return result.rows.map(row => ({
+      ...row,
+      paciente_apellidos: `${row.apellido_paterno} ${row.apellido_materno}`
+    }));
+  }
+
+  // ============================================
+  // APROBAR ORDEN (Guardar resultados y cambiar estado a APROBADA)
+  // ============================================
+
+  async aprobarOrden(
+    ordenId: number,
+    resultados: BulkResultadosInput['resultados'],
+    usuarioId: number
+  ): Promise<{ message: string }> {
+    const client = await pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      // Verificar que la orden existe
+      const ordenCheck = await client.query(
+        `SELECT id, estado FROM ordenes WHERE id = $1`,
+        [ordenId]
+      );
+
+      if (ordenCheck.rows.length === 0) {
+        throw new Error('La orden no existe');
+      }
+
+      // Guardar o actualizar resultados
+      for (const resultado of resultados) {
+        // Verificar si ya existe un resultado para este componente
+        const existeQuery = `
+          SELECT id FROM resultados 
+          WHERE orden_analisis_id = $1 AND componente_id = $2
+        `;
+        const existe = await client.query(existeQuery, [
+          resultado.orden_analisis_id,
+          resultado.componente_id,
+        ]);
+
+        if (existe.rows.length > 0) {
+          // Actualizar resultado existente
+          await client.query(
+            `UPDATE resultados 
+             SET resultado = $1, observacion = $2, updated_at = NOW()
+             WHERE id = $3`,
+            [resultado.valor, resultado.observaciones || null, existe.rows[0].id]
+          );
+        } else {
+          // Insertar nuevo resultado
+          await client.query(
+            `INSERT INTO resultados (
+              orden_analisis_id,
+              componente_id,
+              resultado,
+              usuario_registro_id
+            ) VALUES ($1, $2, $3, $4)`,
+            [
+              resultado.orden_analisis_id,
+              resultado.componente_id,
+              resultado.valor,
+              usuarioId,
+            ]
+          );
+        }
+      }
+
+      // Cambiar estado a APROBADA
+      await client.query(
+        `UPDATE ordenes 
+         SET estado = 'APROBADA', 
+             fecha_aprobacion = NOW(),
+             usuario_aprobacion_id = $1,
+             updated_at = NOW()
+         WHERE id = $2`,
+        [usuarioId, ordenId]
+      );
+
+      await client.query('COMMIT');
+
+      // ✨ Generar interpretación IA en segundo plano (sin bloquear la respuesta)
+      this.generarInterpretacionIA(ordenId).catch(err => {
+        console.error('Error al generar interpretación IA:', err);
+      });
+
+      return { message: 'Orden aprobada exitosamente' };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // ============================================
+  // GUARDAR RESULTADOS SIN APROBAR
+  // ============================================
+
+  async guardarResultados(
+    ordenId: number,
+    resultados: BulkResultadosInput['resultados'],
+    usuarioId: number
+  ): Promise<{ message: string; guardados: number }> {
+    const client = await pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      // Verificar que la orden existe
+      const ordenCheck = await client.query(
+        `SELECT id, estado FROM ordenes WHERE id = $1`,
+        [ordenId]
+      );
+
+      if (ordenCheck.rows.length === 0) {
+        throw new Error('La orden no existe');
+      }
+
+      let guardados = 0;
+
+      // Guardar o actualizar resultados
+      for (const resultado of resultados) {
+        if (!resultado.valor || resultado.valor.trim() === '') continue;
+
+        // Verificar si ya existe un resultado para este componente
+        const existeQuery = `
+          SELECT id FROM resultados 
+          WHERE orden_analisis_id = $1 AND componente_id = $2
+        `;
+        const existe = await client.query(existeQuery, [
+          resultado.orden_analisis_id,
+          resultado.componente_id,
+        ]);
+
+        if (existe.rows.length > 0) {
+          // Actualizar resultado existente
+          await client.query(
+            `UPDATE resultados 
+             SET resultado = $1, observacion = $2, updated_at = NOW()
+             WHERE id = $3`,
+            [resultado.valor, resultado.observaciones || null, existe.rows[0].id]
+          );
+        } else {
+          // Insertar nuevo resultado
+          await client.query(
+            `INSERT INTO resultados (
+              orden_analisis_id,
+              componente_id,
+              resultado,
+              usuario_registro_id
+            ) VALUES ($1, $2, $3, $4)`,
+            [
+              resultado.orden_analisis_id,
+              resultado.componente_id,
+              resultado.valor,
+              usuarioId,
+            ]
+          );
+        }
+        guardados++;
+      }
+
+      // Cambiar estado de la orden a CON_RESULTADOS si se guardaron resultados
+      // Se actualiza desde REGISTRADA o MUESTRA_RECIBIDA
+      if (guardados > 0) {
+        await client.query(
+          `UPDATE ordenes 
+           SET estado = 'CON_RESULTADOS', updated_at = NOW()
+           WHERE id = $1 AND estado IN ('REGISTRADA', 'MUESTRA_RECIBIDA')`,
+          [ordenId]
+        );
+      }
+
+      await client.query('COMMIT');
+
+      return { message: 'Resultados guardados exitosamente', guardados };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // ============================================
+  // GENERAR INTERPRETACIÓN IA
+  // ============================================
+
+  private async generarInterpretacionIA(ordenId: number): Promise<void> {
+    try {
+      // Obtener datos completos de la orden con resultados
+      const orden = await this.getOrdenConResultados(ordenId);
+      
+      // Calcular edad del paciente
+      let edadPaciente = 0;
+      if (orden.paciente_fecha_nacimiento) {
+        const fechaNac = new Date(orden.paciente_fecha_nacimiento);
+        const hoy = new Date();
+        edadPaciente = hoy.getFullYear() - fechaNac.getFullYear();
+        const m = hoy.getMonth() - fechaNac.getMonth();
+        if (m < 0 || (m === 0 && hoy.getDate() < fechaNac.getDate())) {
+          edadPaciente--;
+        }
+      }
+
+      // Preparar datos para la IA (solo componentes con resultados)
+      const ordenParaIA: OrdenParaIA = {
+        id: orden.id,
+        numero_atencion: String(orden.numero_atencion),
+        paciente_nombres: orden.paciente_nombres,
+        paciente_apellidos: orden.paciente_apellidos,
+        paciente_genero: orden.paciente_genero || 'M',
+        paciente_edad: edadPaciente,
+        analisis: orden.analisis.map((a): AnalisisParaIA => ({
+          analisis_nombre: a.analisis_nombre,
+          componentes: a.componentes
+            .filter(c => c.tiene_resultado && c.resultado_valor)
+            .map(c => ({
+              componente_nombre: c.componente_nombre,
+              resultado_valor: c.resultado_valor || '',
+              unidad_medida: c.unidad_medida || null,
+              valores_referenciales: c.valores_referenciales || []
+            }))
+        })).filter(a => a.componentes.length > 0) // Solo análisis con resultados
+      };
+
+      // Generar y guardar interpretación
+      await iaService.procesarInterpretacion(ordenParaIA);
+
+    } catch (error) {
+      console.error(`Error en generarInterpretacionIA para orden ${ordenId}:`, error);
+      // No lanzamos error para no afectar el flujo principal
     }
   }
 }

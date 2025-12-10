@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { ordenesController } from './ordenes.controller';
 import { validate } from '../../middleware/validate.middleware';
+import { authenticate } from '../../middleware/auth.middleware';
 import {
   createOrdenSchema,
   updateOrdenSchema,
@@ -12,6 +13,71 @@ import {
 } from './ordenes.schema';
 
 const router = Router();
+
+// Aplicar autenticación a todas las rutas de órdenes
+router.use(authenticate);
+
+/**
+ * @swagger
+ * /api/ordenes/alertas:
+ *   get:
+ *     summary: Obtener conteo de alertas (órdenes aprobadas y pendientes de aprobar)
+ *     tags: [Ordenes]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Alertas obtenidas exitosamente
+ */
+router.get(
+  '/alertas',
+  ordenesController.getAlertasCounts.bind(ordenesController)
+);
+
+/**
+ * @swagger
+ * /api/ordenes/medicos:
+ *   get:
+ *     summary: Obtener lista de médicos únicos
+ *     tags: [Ordenes]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Lista de médicos obtenida
+ */
+router.get(
+  '/medicos',
+  ordenesController.getMedicos.bind(ordenesController)
+);
+
+/**
+ * @swagger
+ * /api/ordenes/paciente/{dni}:
+ *   get:
+ *     summary: Buscar paciente por DNI en la base de datos local
+ *     tags: [Ordenes]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: dni
+ *         required: true
+ *         schema:
+ *           type: string
+ *           minLength: 8
+ *           maxLength: 8
+ *     responses:
+ *       200:
+ *         description: Paciente encontrado
+ *       404:
+ *         description: Paciente no encontrado
+ */
+router.get(
+  '/paciente/:dni',
+  validate(consultarDniSchema),
+  ordenesController.buscarPacientePorDni.bind(ordenesController)
+);
 
 /**
  * @swagger
@@ -286,6 +352,88 @@ router.delete(
   '/:id',
   validate(deleteOrdenSchema),
   ordenesController.delete.bind(ordenesController)
+);
+
+/**
+ * @swagger
+ * /api/ordenes/{id}/recepcionar-muestra:
+ *   patch:
+ *     summary: Marcar muestra como recepcionada
+ *     tags: [Ordenes]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Muestra recepcionada exitosamente
+ *       404:
+ *         description: Orden no encontrada
+ */
+router.patch(
+  '/:id/recepcionar-muestra',
+  validate(getOrdenByIdSchema),
+  ordenesController.recepcionarMuestra.bind(ordenesController)
+);
+
+/**
+ * @swagger
+ * /api/ordenes/precios:
+ *   post:
+ *     summary: Obtener precios de análisis según tarifario
+ *     tags: [Ordenes]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               analisis_ids:
+ *                 type: array
+ *                 items:
+ *                   type: integer
+ *               convenio_id:
+ *                 type: integer
+ *     responses:
+ *       200:
+ *         description: Precios obtenidos exitosamente
+ */
+router.post(
+  '/precios',
+  ordenesController.obtenerPrecios.bind(ordenesController)
+);
+
+/**
+ * @swagger
+ * /api/ordenes/{id}/imprimir:
+ *   patch:
+ *     summary: Marcar orden como impresa
+ *     tags: [Ordenes]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Orden marcada como impresa exitosamente
+ *       404:
+ *         description: Orden no encontrada o no está en estado aprobada
+ */
+router.patch(
+  '/:id/imprimir',
+  validate(getOrdenByIdSchema),
+  ordenesController.marcarComoImpreso.bind(ordenesController)
 );
 
 export default router;

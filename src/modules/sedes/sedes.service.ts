@@ -14,8 +14,8 @@ export class SedesService {
 
   async create(data: CreateSedeInput): Promise<Sede> {
     const result = await pool.query(
-      'INSERT INTO sedes (nombre, direccion, telefono, email) VALUES ($1, $2, $3, $4) RETURNING *',
-      [data.nombre, data.direccion, data.telefono, data.email]
+      'INSERT INTO sedes (nombre, direccion, telefono) VALUES ($1, $2, $3) RETURNING *',
+      [data.nombre, data.direccion || null, data.telefono || null]
     );
     return result.rows[0];
   }
@@ -36,10 +36,6 @@ export class SedesService {
     if (data.telefono !== undefined) {
       fields.push(`telefono = $${paramCount++}`);
       values.push(data.telefono);
-    }
-    if (data.email !== undefined) {
-      fields.push(`email = $${paramCount++}`);
-      values.push(data.email);
     }
     if (data.activo !== undefined) {
       fields.push(`activo = $${paramCount++}`);

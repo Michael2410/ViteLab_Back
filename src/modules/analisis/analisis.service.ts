@@ -28,11 +28,10 @@ export class AnalisisService {
             json_build_object(
               'id', c.id,
               'nombre', c.nombre,
-              'valor_referencial', c.valor_referencial,
+              'valores_referenciales', c.valores_referenciales,
               'unidad_medida', c.unidad_medida,
               'area_id', c.area_id,
               'metodo_id', c.metodo_id,
-              'orden', c.orden,
               'activo', c.activo,
               'area', CASE 
                 WHEN c.area_id IS NOT NULL THEN jsonb_build_object('id', ar.id, 'nombre', ar.nombre)
@@ -123,21 +122,60 @@ export class AnalisisService {
     return result.rows;
   }
 
-  async search(query: string): Promise<Analisis[]> {
+  async search(query: string): Promise<any[]> {
     const result = await pool.query(`
-      SELECT * FROM analisis 
-      WHERE activo = true 
+      SELECT 
+        a.id,
+        a.nombre,
+        a.descripcion,
+        a.sinonimia,
+        a.componentes_ids,
+        a.activo,
+        a.created_at,
+        a.updated_at
+      FROM analisis a
+      WHERE a.activo = true 
       AND (
-        LOWER(nombre) LIKE LOWER($1) 
-        OR LOWER(descripcion) LIKE LOWER($1)
+        LOWER(a.nombre) LIKE LOWER($1) 
+        OR LOWER(a.descripcion) LIKE LOWER($1)
         OR EXISTS (
-          SELECT 1 FROM unnest(sinonimia) AS s WHERE LOWER(s) LIKE LOWER($1)
+          SELECT 1 FROM unnest(a.sinonimia) AS s WHERE LOWER(s) LIKE LOWER($1)
         )
       )
-      ORDER BY nombre ASC
+      ORDER BY a.nombre ASC
       LIMIT 20
     `, [`%${query}%`]);
-    return result.rows;
+
+    // Para cada análisis, obtener sus componentes con muestras
+    const analisisConComponentes = await Promise.all(
+      result.rows.map(async (analisis) => {
+        if (analisis.componentes_ids && analisis.componentes_ids.length > 0) {
+          const componentesResult = await pool.query(`
+            SELECT 
+              c.id,
+              c.nombre,
+              c.unidad_medida,
+              c.valores_referenciales,
+              COALESCE(
+                (SELECT json_agg(json_build_object('id', mu.id, 'nombre', mu.nombre))
+                 FROM componente_muestras cm 
+                 INNER JOIN muestras mu ON cm.muestra_id = mu.id 
+                 WHERE cm.componente_id = c.id AND mu.activo = true), '[]'::json
+              ) as muestras
+            FROM componentes c
+            WHERE c.id = ANY($1) AND c.activo = true
+            ORDER BY array_position($1, c.id)
+          `, [analisis.componentes_ids]);
+          
+          analisis.componentes = componentesResult.rows;
+        } else {
+          analisis.componentes = [];
+        }
+        return analisis;
+      })
+    );
+
+    return analisisConComponentes;
   }
 }
 

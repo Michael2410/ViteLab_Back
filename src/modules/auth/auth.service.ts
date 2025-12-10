@@ -46,6 +46,12 @@ export class AuthService {
       throw new Error('Usuario o contraseña incorrectos');
     }
 
+    // Obtener sedes del usuario
+    const sedes = await this.getUserSedes(user.id);
+
+    // Obtener permisos del usuario
+    const permisos = await this.getUserPermisos(user.rol_id);
+
     // Generar tokens
     const accessToken = this.generateAccessToken({
       userId: user.id,
@@ -74,7 +80,11 @@ export class AuthService {
     const { password_hash, refresh_token, refresh_token_expires_at, ...userWithoutSensitiveData } = user;
 
     return {
-      user: userWithoutSensitiveData,
+      user: {
+        ...userWithoutSensitiveData,
+        sedes,
+        permisos,
+      },
       accessToken,
       refreshToken,
     };
@@ -203,10 +213,68 @@ export class AuthService {
   // ============================================
 
   /**
+   * Obtener sedes de un usuario
+   */
+  async getUserSedes(userId: number): Promise<{ id: number; nombre: string }[]> {
+    const query = `
+      SELECT s.id, s.nombre
+      FROM usuarios_sedes us
+      INNER JOIN sedes s ON us.sede_id = s.id
+      WHERE us.usuario_id = $1 AND s.activo = true
+      ORDER BY s.nombre
+    `;
+    const result = await pool.query(query, [userId]);
+    return result.rows;
+  }
+
+  /**
+   * Obtener permisos de un rol
+   */
+  async getUserPermisos(rolId: number): Promise<string[]> {
+    const query = `
+      SELECT p.codigo
+      FROM roles_permisos rp
+      INNER JOIN permisos p ON rp.permiso_id = p.id
+      WHERE rp.rol_id = $1
+    `;
+    const result = await pool.query(query, [rolId]);
+    return result.rows.map((row) => row.codigo);
+  }
+
+  /**
+   * Asignar sedes a un usuario
+   */
+  async assignUserSedes(userId: number, sedeIds: number[]): Promise<void> {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      // Eliminar asignaciones anteriores
+      await client.query('DELETE FROM usuarios_sedes WHERE usuario_id = $1', [userId]);
+      
+      // Insertar nuevas asignaciones
+      if (sedeIds.length > 0) {
+        const values = sedeIds.map((_, idx) => `($1, $${idx + 2})`).join(', ');
+        await client.query(
+          `INSERT INTO usuarios_sedes (usuario_id, sede_id) VALUES ${values}`,
+          [userId, ...sedeIds]
+        );
+      }
+      
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Crear usuario
    */
   async createUser(userData: CreateUserRequest): Promise<Usuario> {
-    const { username, email, password, nombres, apellidos, rol_id, firma_url } = userData;
+    const { username, email, password, nombres, apellidos, rol_id, firma_url, sede_ids } = userData;
 
     // Verificar si username ya existe
     const existingUser = await pool.query('SELECT id FROM usuarios WHERE username = $1 OR email = $2', [
@@ -229,8 +297,14 @@ export class AuthService {
     `;
 
     const result = await pool.query(query, [username, email, password_hash, nombres, apellidos, rol_id, firma_url]);
+    const user = result.rows[0];
 
-    return result.rows[0];
+    // Asignar sedes si se proporcionaron
+    if (sede_ids && sede_ids.length > 0) {
+      await this.assignUserSedes(user.id, sede_ids);
+    }
+
+    return user;
   }
 
   /**
@@ -246,11 +320,19 @@ export class AuthService {
 
     const result = await pool.query(query);
 
-    // Remover datos sensibles
-    return result.rows.map((user) => {
-      const { password_hash, refresh_token, refresh_token_expires_at, ...userWithoutSensitiveData } = user;
-      return userWithoutSensitiveData;
-    });
+    // Obtener sedes para cada usuario
+    const usersWithSedes = await Promise.all(
+      result.rows.map(async (user) => {
+        const sedes = await this.getUserSedes(user.id);
+        const { password_hash, refresh_token, refresh_token_expires_at, ...userWithoutSensitiveData } = user;
+        return {
+          ...userWithoutSensitiveData,
+          sedes,
+        };
+      })
+    );
+
+    return usersWithSedes;
   }
 
   /**
@@ -270,9 +352,13 @@ export class AuthService {
       throw new Error('Usuario no encontrado');
     }
 
+    const sedes = await this.getUserSedes(id);
     const { password_hash, refresh_token, refresh_token_expires_at, ...userWithoutSensitiveData } = result.rows[0];
 
-    return userWithoutSensitiveData;
+    return {
+      ...userWithoutSensitiveData,
+      sedes,
+    };
   }
 
   /**
@@ -320,27 +406,44 @@ export class AuthService {
       values.push(userData.activo);
     }
 
-    if (fields.length === 0) {
+    // Actualizar sedes si se proporcionaron
+    if (userData.sede_ids !== undefined) {
+      await this.assignUserSedes(id, userData.sede_ids);
+    }
+
+    if (fields.length === 0 && userData.sede_ids === undefined) {
       throw new Error('No hay campos para actualizar');
     }
 
-    // Agregar ID al final
-    values.push(id);
+    let user;
+    if (fields.length > 0) {
+      // Agregar ID al final
+      values.push(id);
 
-    const query = `
-      UPDATE usuarios
-      SET ${fields.join(', ')}
-      WHERE id = $${paramIndex}
-      RETURNING id, username, email, nombres, apellidos, rol_id, firma_url, activo, created_at, updated_at
-    `;
+      const query = `
+        UPDATE usuarios
+        SET ${fields.join(', ')}
+        WHERE id = $${paramIndex}
+        RETURNING id, username, email, nombres, apellidos, rol_id, firma_url, activo, created_at, updated_at
+      `;
 
-    const result = await pool.query(query, values);
+      const result = await pool.query(query, values);
 
-    if (result.rows.length === 0) {
-      throw new Error('Usuario no encontrado');
+      if (result.rows.length === 0) {
+        throw new Error('Usuario no encontrado');
+      }
+
+      user = result.rows[0];
+    } else {
+      // Solo se actualizaron sedes, obtener usuario actual
+      const result = await pool.query(
+        'SELECT id, username, email, nombres, apellidos, rol_id, firma_url, activo, created_at, updated_at FROM usuarios WHERE id = $1',
+        [id]
+      );
+      user = result.rows[0];
     }
 
-    return result.rows[0];
+    return user;
   }
 
   /**
@@ -354,6 +457,19 @@ export class AuthService {
     }
   }
 
+  /**
+   * Obtener todos los roles
+   */
+  async getAllRoles(): Promise<{ id: number; nombre: string; descripcion: string; activo: boolean }[]> {
+    const result = await pool.query(`
+      SELECT id, nombre, descripcion, activo
+      FROM roles
+      WHERE activo = true
+      ORDER BY nombre ASC
+    `);
+    return result.rows;
+  }
+
   // ============================================
   // HELPERS
   // ============================================
@@ -363,7 +479,7 @@ export class AuthService {
    */
   private generateAccessToken(payload: JwtPayload): string {
     return jwt.sign(payload, process.env.JWT_ACCESS_SECRET || 'access_secret', {
-      expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '15m',
+      expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '8h', // Extendido para desarrollo
     });
   }
 

@@ -1,7 +1,14 @@
 export enum EstadoOrden {
   REGISTRADA = 'REGISTRADA',
+  MUESTRA_RECIBIDA = 'MUESTRA_RECIBIDA',
   CON_RESULTADOS = 'CON_RESULTADOS',
   APROBADA = 'APROBADA',
+  IMPRESO = 'IMPRESO',
+}
+
+export enum TipoPaciente {
+  PARTICULAR = 'PARTICULAR',
+  CONVENIO = 'CONVENIO',
 }
 
 // PACIENTE
@@ -9,9 +16,11 @@ export interface Paciente {
   id: number;
   dni: string;
   nombres: string;
-  apellidos: string;
-  fecha_nacimiento: Date;
-  sexo: 'M' | 'F';
+  apellido_paterno: string;
+  apellido_materno: string;
+  nombre_completo: string;
+  fecha_nacimiento: Date | string;
+  genero: 'M' | 'F';
   telefono?: string;
   email?: string;
   direccion?: string;
@@ -22,9 +31,10 @@ export interface Paciente {
 export interface CreatePacienteInput {
   dni: string;
   nombres: string;
-  apellidos: string;
-  fecha_nacimiento: Date;
-  sexo: 'M' | 'F';
+  apellido_paterno: string;
+  apellido_materno: string;
+  fecha_nacimiento: string;
+  genero: 'M' | 'F';
   telefono?: string;
   email?: string;
   direccion?: string;
@@ -52,6 +62,8 @@ export interface Orden {
   tipo_cliente_id: number;
   convenio_id?: number;
   estado: EstadoOrden;
+  muestra_recepcionada: boolean;
+  medico?: string;
   fecha_registro: Date;
   fecha_aprobacion?: Date;
   nota?: string;
@@ -74,7 +86,11 @@ export interface CreateOrdenInput {
   sede_id: number;
   tipo_cliente_id: number;
   convenio_id?: number;
-  analisis_ids: number[];
+  medico?: string;
+  analisis: Array<{
+    id: number;
+    muestras_ids?: number[];
+  }>;
   nota?: string;
 }
 
@@ -82,6 +98,7 @@ export interface UpdateOrdenInput {
   sede_id?: number;
   tipo_cliente_id?: number;
   convenio_id?: number;
+  medico?: string;
   nota?: string;
 }
 
@@ -90,6 +107,7 @@ export interface OrdenAnalisis {
   id: number;
   orden_id: number;
   analisis_id: number;
+  muestras_ids?: number[];
   precio: number;
   created_at: Date;
 }
@@ -97,6 +115,7 @@ export interface OrdenAnalisis {
 export interface CreateOrdenAnalisisInput {
   orden_id: number;
   analisis_id: number;
+  muestras_ids?: number[];
   precio: number;
 }
 
@@ -154,10 +173,11 @@ export interface OrdenDetalle extends Orden {
 export interface OrdenFilters {
   estado?: EstadoOrden;
   sede_id?: number;
+  sede_ids?: number[]; // Para filtrar por múltiples sedes (del usuario)
   fecha_desde?: Date;
   fecha_hasta?: Date;
   paciente_dni?: string;
-  numero_orden?: string;
+  paciente_nombre?: string;
   page?: number;
   limit?: number;
 }

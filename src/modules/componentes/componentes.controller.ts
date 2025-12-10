@@ -12,6 +12,15 @@ export class ComponentesController {
     }
   }
 
+  async getActive(_req: Request, res: Response): Promise<void> {
+    try {
+      const componentes = await componentesService.getActive();
+      successResponse(res, componentes, 'Componentes activos obtenidos exitosamente');
+    } catch (error) {
+      errorResponse(res, 'Error al obtener componentes activos', error);
+    }
+  }
+
   async getById(req: Request, res: Response): Promise<void> {
     try {
       const id = parseInt(req.params.id);
@@ -25,16 +34,6 @@ export class ComponentesController {
       successResponse(res, componente, 'Componente obtenido exitosamente');
     } catch (error) {
       errorResponse(res, 'Error al obtener componente', error);
-    }
-  }
-
-  async getByAnalisisId(req: Request, res: Response): Promise<void> {
-    try {
-      const analisisId = parseInt(req.params.analisisId);
-      const componentes = await componentesService.getByAnalisisId(analisisId);
-      successResponse(res, componentes, 'Componentes del análisis obtenidos exitosamente');
-    } catch (error) {
-      errorResponse(res, 'Error al obtener componentes del análisis', error);
     }
   }
 

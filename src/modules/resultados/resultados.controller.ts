@@ -1,9 +1,66 @@
 import { Request, Response } from 'express';
 import { resultadosService } from './resultados.service';
+import pool from '../../config/database';
 import { successResponse, errorResponse } from '../../utils/response.utils';
 import type { CreateResultadoInput, UpdateResultadoInput, BulkResultadosInput } from './resultados.types';
 
 class ResultadosController {
+  // ============================================
+  // OBTENER ÓRDENES PARA INGRESO DE RESULTADOS
+  // ============================================
+
+  async getOrdenesParaResultados(req: Request, res: Response): Promise<void> {
+    try {
+      // Obtener sedes del usuario autenticado
+      const usuarioId = req.user?.userId;
+      let sedesUsuario: number[] | undefined;
+      
+      if (usuarioId) {
+        const sedesResult = await pool.query(
+          'SELECT sede_id FROM usuarios_sedes WHERE usuario_id = $1', 
+          [usuarioId]
+        );
+        if (sedesResult.rows.length > 0) {
+          sedesUsuario = sedesResult.rows.map((r: any) => r.sede_id);
+          console.log('📋 [RESULTADOS] Sedes del usuario:', sedesUsuario);
+        }
+      }
+
+      const ordenes = await resultadosService.getOrdenesParaResultados(sedesUsuario);
+      successResponse(res, ordenes, 'Órdenes obtenidas exitosamente');
+    } catch (error: any) {
+      errorResponse(res, error.message || 'Error al obtener órdenes', 500);
+    }
+  }
+
+  // ============================================
+  // OBTENER ÓRDENES PENDIENTES DE APROBACIÓN
+  // ============================================
+
+  async getOrdenesPendientesAprobacion(req: Request, res: Response): Promise<void> {
+    try {
+      // Obtener sedes del usuario autenticado
+      const usuarioId = req.user?.userId;
+      let sedesUsuario: number[] | undefined;
+      
+      if (usuarioId) {
+        const sedesResult = await pool.query(
+          'SELECT sede_id FROM usuarios_sedes WHERE usuario_id = $1', 
+          [usuarioId]
+        );
+        if (sedesResult.rows.length > 0) {
+          sedesUsuario = sedesResult.rows.map((r: any) => r.sede_id);
+          console.log('📋 [APROBACIONES] Sedes del usuario:', sedesUsuario);
+        }
+      }
+
+      const ordenes = await resultadosService.getOrdenesPendientesAprobacion(sedesUsuario);
+      successResponse(res, ordenes, 'Órdenes pendientes de aprobación obtenidas exitosamente');
+    } catch (error: any) {
+      errorResponse(res, error.message || 'Error al obtener órdenes pendientes', 500);
+    }
+  }
+
   // ============================================
   // CREAR RESULTADO INDIVIDUAL
   // ============================================
@@ -108,21 +165,26 @@ class ResultadosController {
 
   async getByOrden(req: Request, res: Response): Promise<void> {
     try {
+      console.log('📋 [RESULTADOS] getByOrden - params:', req.params);
       const ordenId = parseInt(req.params.ordenId, 10);
+      console.log('📋 [RESULTADOS] ordenId parseado:', ordenId);
 
       if (isNaN(ordenId)) {
-        errorResponse(res, 'ID de orden inválido', 400);
+        console.log('❌ [RESULTADOS] ordenId es NaN');
+        errorResponse(res, 'ID de orden inválido', null, 400);
         return;
       }
 
       const ordenConResultados = await resultadosService.getOrdenConResultados(ordenId);
+      console.log('✅ [RESULTADOS] Orden obtenida:', ordenConResultados?.id);
 
       successResponse(res, ordenConResultados, 'Orden con resultados obtenida exitosamente');
     } catch (error: any) {
+      console.log('❌ [RESULTADOS] Error:', error.message);
       if (error.message === 'Orden no encontrada') {
-        errorResponse(res, error.message, 404);
+        errorResponse(res, error.message, null, 404);
       } else {
-        errorResponse(res, error.message || 'Error al obtener orden con resultados', 500);
+        errorResponse(res, error.message || 'Error al obtener orden con resultados', null, 500);
       }
     }
   }
@@ -176,6 +238,52 @@ class ResultadosController {
       } else {
         errorResponse(res, error.message || 'Error al eliminar resultado', 500);
       }
+    }
+  }
+
+  // ============================================
+  // GUARDAR RESULTADOS SIN APROBAR
+  // ============================================
+
+  async guardarResultados(req: Request, res: Response): Promise<void> {
+    try {
+      const ordenId = parseInt(req.params.ordenId, 10);
+      const { resultados } = req.body;
+      const usuarioId = req.user?.userId || 1;
+
+      if (isNaN(ordenId)) {
+        errorResponse(res, 'ID de orden inválido', 400);
+        return;
+      }
+
+      const result = await resultadosService.guardarResultados(ordenId, resultados, usuarioId);
+
+      successResponse(res, result, result.message);
+    } catch (error: any) {
+      errorResponse(res, error.message || 'Error al guardar resultados', 500);
+    }
+  }
+
+  // ============================================
+  // APROBAR ORDEN (Guardar y cambiar estado)
+  // ============================================
+
+  async aprobarOrden(req: Request, res: Response): Promise<void> {
+    try {
+      const ordenId = parseInt(req.params.ordenId, 10);
+      const { resultados } = req.body;
+      const usuarioId = req.user?.userId || 1;
+
+      if (isNaN(ordenId)) {
+        errorResponse(res, 'ID de orden inválido', 400);
+        return;
+      }
+
+      const result = await resultadosService.aprobarOrden(ordenId, resultados, usuarioId);
+
+      successResponse(res, result, result.message);
+    } catch (error: any) {
+      errorResponse(res, error.message || 'Error al aprobar orden', 500);
     }
   }
 }

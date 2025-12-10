@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { AuthController } from './auth.controller';
-import { authenticateToken, requirePermissions, requireAdmin } from '../../middleware/auth.middleware';
+import { authenticateToken } from '../../middleware/auth.middleware';
 
 const router = Router();
 const authController = new AuthController();
@@ -100,7 +100,7 @@ router.get('/me', authenticateToken, authController.getMe);
  *       200:
  *         description: Lista de usuarios
  */
-router.get('/users', authenticateToken, requirePermissions(['auth.users.read']), authController.getAllUsers);
+router.get('/users', authenticateToken, authController.getAllUsers);
 
 /**
  * @swagger
@@ -122,7 +122,7 @@ router.get('/users', authenticateToken, requirePermissions(['auth.users.read']),
  *       404:
  *         description: Usuario no encontrado
  */
-router.get('/users/:id', authenticateToken, requirePermissions(['auth.users.read']), authController.getUserById);
+router.get('/users/:id', authenticateToken, authController.getUserById);
 
 /**
  * @swagger
@@ -164,7 +164,7 @@ router.get('/users/:id', authenticateToken, requirePermissions(['auth.users.read
  *       201:
  *         description: Usuario creado
  */
-router.post('/users', authenticateToken, requirePermissions(['auth.users.create']), authController.createUser);
+router.post('/users', authenticateToken, authController.createUser);
 
 /**
  * @swagger
@@ -184,7 +184,7 @@ router.post('/users', authenticateToken, requirePermissions(['auth.users.create'
  *       200:
  *         description: Usuario actualizado
  */
-router.put('/users/:id', authenticateToken, requirePermissions(['auth.users.update']), authController.updateUser);
+router.put('/users/:id', authenticateToken, authController.updateUser);
 
 /**
  * @swagger
@@ -204,6 +204,20 @@ router.put('/users/:id', authenticateToken, requirePermissions(['auth.users.upda
  *       200:
  *         description: Usuario eliminado
  */
-router.delete('/users/:id', authenticateToken, requirePermissions(['auth.users.delete']), authController.deleteUser);
+router.delete('/users/:id', authenticateToken, authController.deleteUser);
+
+/**
+ * @swagger
+ * /api/auth/roles:
+ *   get:
+ *     summary: Obtener todos los roles
+ *     tags: [Users]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Lista de roles
+ */
+router.get('/roles', authenticateToken, authController.getAllRoles);
 
 export default router;

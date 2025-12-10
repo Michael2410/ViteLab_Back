@@ -15,18 +15,21 @@ export class OrdenesService {
   // ========== PACIENTES ==========
   
   async createPaciente(data: CreatePacienteInput): Promise<Paciente> {
+    const nombreCompleto = `${data.apellido_paterno} ${data.apellido_materno}, ${data.nombres}`;
     const result = await pool.query(
-      `INSERT INTO pacientes (dni, nombres, apellidos, fecha_nacimiento, sexo, telefono, email, direccion)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      `INSERT INTO pacientes (dni, nombres, apellido_paterno, apellido_materno, nombre_completo, fecha_nacimiento, genero, telefono, email, direccion)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [
         data.dni,
         data.nombres,
-        data.apellidos,
+        data.apellido_paterno,
+        data.apellido_materno,
+        nombreCompleto,
         data.fecha_nacimiento,
-        data.sexo,
-        data.telefono,
-        data.email,
-        data.direccion,
+        data.genero,
+        data.telefono || null,
+        data.email || null,
+        data.direccion || null,
       ]
     );
     return result.rows[0];
@@ -48,18 +51,21 @@ export class OrdenesService {
       // 1. Crear o obtener paciente
       let paciente: Paciente | null = await this.getPacienteByDni(data.paciente.dni);
       if (!paciente) {
+        const nombreCompleto = `${data.paciente.apellido_paterno} ${data.paciente.apellido_materno}, ${data.paciente.nombres}`;
         const pacienteResult = await client.query(
-          `INSERT INTO pacientes (dni, nombres, apellidos, fecha_nacimiento, sexo, telefono, email, direccion)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+          `INSERT INTO pacientes (dni, nombres, apellido_paterno, apellido_materno, nombre_completo, fecha_nacimiento, genero, telefono, email, direccion)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
           [
             data.paciente.dni,
             data.paciente.nombres,
-            data.paciente.apellidos,
+            data.paciente.apellido_paterno,
+            data.paciente.apellido_materno,
+            nombreCompleto,
             data.paciente.fecha_nacimiento,
-            data.paciente.sexo,
-            data.paciente.telefono,
-            data.paciente.email,
-            data.paciente.direccion,
+            data.paciente.genero,
+            data.paciente.telefono || null,
+            data.paciente.email || null,
+            data.paciente.direccion || null,
           ]
         );
         paciente = pacienteResult.rows[0] as Paciente;
@@ -69,38 +75,41 @@ export class OrdenesService {
         throw new Error('Error al crear o recuperar paciente');
       }
 
-      // 2. Generar número de orden único
-      const numeroOrden = await this.generateNumeroOrden();
+      // 2. Generar número de atención único
+      const numeroAtencion = await this.generateNumeroOrden();
 
       // 3. Obtener precios de análisis según convenio/tarifario
-      const precios = await this.calcularPrecios(data.analisis_ids, data.convenio_id);
+      const analisisIds = data.analisis.map(a => a.id);
+      const precios = await this.calcularPrecios(analisisIds, data.convenio_id);
       const total = precios.reduce((sum, p) => sum + p.precio, 0);
 
       // 4. Crear orden
       const ordenResult = await client.query(
         `INSERT INTO ordenes (
-          numero_orden, paciente_id, sede_id, tipo_cliente_id, convenio_id,
-          estado, total, observaciones, usuario_registro_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+          numero_atencion, paciente_id, sede_id, tipo_cliente_id, convenio_id,
+          estado, nota, usuario_registro_id, muestra_recepcionada, medico
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
         [
-          numeroOrden,
+          numeroAtencion,
           paciente.id,
           data.sede_id,
           data.tipo_cliente_id,
-          data.convenio_id,
+          data.convenio_id || null,
           'REGISTRADA',
-          total,
-          data.observaciones,
+          data.nota || null,
           usuarioId,
+          false, // muestra_recepcionada = false por defecto
+          data.medico || null,
         ]
       );
       const orden = ordenResult.rows[0];
 
-      // 5. Crear orden_analisis con precios
-      for (const precio of precios) {
+      // 5. Crear orden_analisis con precios y muestras_ids
+      for (const analisisItem of data.analisis) {
+        const precioInfo = precios.find(p => p.analisis_id === analisisItem.id);
         await client.query(
-          'INSERT INTO orden_analisis (orden_id, analisis_id, precio) VALUES ($1, $2, $3)',
-          [orden.id, precio.analisis_id, precio.precio]
+          'INSERT INTO orden_analisis (orden_id, analisis_id, precio, muestras_ids) VALUES ($1, $2, $3, $4)',
+          [orden.id, analisisItem.id, precioInfo?.precio || 0, analisisItem.muestras_ids || []]
         );
       }
 
@@ -120,14 +129,34 @@ export class OrdenesService {
   async getOrdenById(id: number): Promise<OrdenDetalle> {
     const result = await pool.query(
       `SELECT 
-        o.*,
+        o.id,
+        o.numero_atencion,
+        o.paciente_id,
+        o.sede_id,
+        o.tipo_cliente_id,
+        o.convenio_id,
+        o.usuario_registro_id,
+        o.estado,
+        o.nota,
+        o.medico,
+        o.tipo_paciente,
+        o.fecha_registro,
+        o.fecha_recepcion,
+        o.usuario_recepcion_id,
+        o.fecha_aprobacion,
+        o.usuario_aprobacion_id,
+        o.muestra_recepcionada,
+        o.created_at,
+        o.updated_at,
         json_build_object(
           'id', p.id,
           'dni', p.dni,
           'nombres', p.nombres,
-          'apellidos', p.apellidos,
+          'apellido_paterno', p.apellido_paterno,
+          'apellido_materno', p.apellido_materno,
+          'nombre_completo', p.nombre_completo,
           'fecha_nacimiento', p.fecha_nacimiento,
-          'sexo', p.sexo,
+          'genero', p.genero,
           'telefono', p.telefono,
           'email', p.email
         ) as paciente,
@@ -143,27 +172,27 @@ export class OrdenesService {
         CASE WHEN o.convenio_id IS NOT NULL THEN
           json_build_object(
             'id', c.id,
-            'nombre', c.nombre,
+            'nombre_empresa', c.nombre_empresa,
             'tarifario_id', c.tarifario_id
           )
         ELSE NULL END as convenio,
         json_build_object(
           'id', ur.id,
-          'nombre', ur.nombre,
-          'apellido', ur.apellido
+          'nombres', ur.nombres,
+          'apellidos', ur.apellidos
         ) as usuario_registro,
-        CASE WHEN o.usuario_resultados_id IS NOT NULL THEN
+        CASE WHEN o.usuario_recepcion_id IS NOT NULL THEN
           json_build_object(
-            'id', ures.id,
-            'nombre', ures.nombre,
-            'apellido', ures.apellido
+            'id', urec.id,
+            'nombres', urec.nombres,
+            'apellidos', urec.apellidos
           )
-        ELSE NULL END as usuario_resultados,
+        ELSE NULL END as usuario_recepcion,
         CASE WHEN o.usuario_aprobacion_id IS NOT NULL THEN
           json_build_object(
             'id', uapro.id,
-            'nombre', uapro.nombre,
-            'apellido', uapro.apellido
+            'nombres', uapro.nombres,
+            'apellidos', uapro.apellidos
           )
         ELSE NULL END as usuario_aprobacion
       FROM ordenes o
@@ -172,7 +201,7 @@ export class OrdenesService {
       INNER JOIN tipos_cliente tc ON o.tipo_cliente_id = tc.id
       LEFT JOIN convenios c ON o.convenio_id = c.id
       INNER JOIN usuarios ur ON o.usuario_registro_id = ur.id
-      LEFT JOIN usuarios ures ON o.usuario_resultados_id = ures.id
+      LEFT JOIN usuarios urec ON o.usuario_recepcion_id = urec.id
       LEFT JOIN usuarios uapro ON o.usuario_aprobacion_id = uapro.id
       WHERE o.id = $1`,
       [id]
@@ -189,9 +218,9 @@ export class OrdenesService {
       `SELECT 
         oa.id,
         oa.analisis_id,
-        a.codigo,
         a.nombre,
-        oa.precio
+        oa.precio,
+        oa.muestras_ids
       FROM orden_analisis oa
       INNER JOIN analisis a ON oa.analisis_id = a.id
       WHERE oa.orden_id = $1
@@ -225,6 +254,12 @@ export class OrdenesService {
       conditions.push(`o.sede_id = $${paramCount++}`);
       values.push(filters.sede_id);
     }
+    // Filtrar por sedes del usuario (si tiene sedes asignadas)
+    if (filters.sede_ids && filters.sede_ids.length > 0) {
+      conditions.push(`o.sede_id = ANY($${paramCount++})`);
+      values.push(filters.sede_ids);
+      console.log('🔍 [ORDENES SERVICE] Filtrando por sedes del usuario:', filters.sede_ids);
+    }
     if (filters.fecha_desde) {
       conditions.push(`o.fecha_registro >= $${paramCount++}`);
       values.push(filters.fecha_desde);
@@ -237,9 +272,10 @@ export class OrdenesService {
       conditions.push(`p.dni LIKE $${paramCount++}`);
       values.push(`%${filters.paciente_dni}%`);
     }
-    if (filters.numero_orden) {
-      conditions.push(`o.numero_orden LIKE $${paramCount++}`);
-      values.push(`%${filters.numero_orden}%`);
+    if (filters.paciente_nombre) {
+      conditions.push(`(p.nombres ILIKE $${paramCount} OR p.apellido_paterno ILIKE $${paramCount} OR p.apellido_materno ILIKE $${paramCount})`);
+      values.push(`%${filters.paciente_nombre}%`);
+      paramCount++;
     }
 
     // Count total
@@ -262,9 +298,14 @@ export class OrdenesService {
         o.tipo_cliente_id,
         o.convenio_id,
         o.estado,
+        o.muestra_recepcionada,
         o.fecha_registro,
+        o.fecha_recepcion,
+        o.tipo_paciente,
         o.nota,
+        o.medico,
         o.usuario_registro_id,
+        o.usuario_recepcion_id,
         o.created_at,
         o.updated_at,
         p.dni as paciente_dni,
@@ -273,6 +314,8 @@ export class OrdenesService {
         s.nombre as sede_nombre,
         tc.nombre as tipo_cliente_nombre,
         c.nombre_empresa as convenio_nombre,
+        urec.nombres as usuario_recepcion_nombres,
+        urec.apellidos as usuario_recepcion_apellidos,
         COALESCE(SUM(oa.precio), 0) as total
       FROM ordenes o
       INNER JOIN pacientes p ON o.paciente_id = p.id
@@ -280,8 +323,11 @@ export class OrdenesService {
       INNER JOIN tipos_cliente tc ON o.tipo_cliente_id = tc.id
       LEFT JOIN convenios c ON o.convenio_id = c.id
       LEFT JOIN orden_analisis oa ON o.id = oa.orden_id
+      LEFT JOIN usuarios urec ON o.usuario_recepcion_id = urec.id
       WHERE ${conditions.join(' AND ')}
-      GROUP BY o.id, p.dni, p.nombres, p.apellido_paterno, p.apellido_materno, s.nombre, tc.nombre, c.nombre_empresa
+      GROUP BY o.id, o.muestra_recepcionada, o.medico, o.tipo_paciente, o.fecha_recepcion, o.usuario_recepcion_id, 
+               p.dni, p.nombres, p.apellido_paterno, p.apellido_materno, s.nombre, tc.nombre, c.nombre_empresa,
+               urec.nombres, urec.apellidos
       ORDER BY o.fecha_registro DESC
       LIMIT $${paramCount++} OFFSET $${paramCount++}`,
       values
@@ -295,10 +341,15 @@ export class OrdenesService {
       tipo_cliente_id: row.tipo_cliente_id,
       convenio_id: row.convenio_id,
       estado: row.estado,
+      muestra_recepcionada: row.muestra_recepcionada || false,
       fecha_registro: row.fecha_registro,
+      fecha_recepcion: row.fecha_recepcion,
+      tipo_paciente: row.tipo_paciente,
       total: parseFloat(row.total || 0),
       nota: row.nota,
+      medico: row.medico,
       usuario_registro_id: row.usuario_registro_id,
+      usuario_recepcion_id: row.usuario_recepcion_id,
       created_at: row.created_at,
       updated_at: row.updated_at,
       // Campos adicionales para la vista
@@ -308,6 +359,9 @@ export class OrdenesService {
       sede_nombre: row.sede_nombre,
       tipo_cliente_nombre: row.tipo_cliente_nombre,
       convenio_nombre: row.convenio_nombre,
+      usuario_recepcion_nombre: row.usuario_recepcion_nombres && row.usuario_recepcion_apellidos 
+        ? `${row.usuario_recepcion_nombres} ${row.usuario_recepcion_apellidos}` 
+        : null,
     }));
 
     return {
@@ -336,9 +390,9 @@ export class OrdenesService {
       fields.push(`convenio_id = $${paramCount++}`);
       values.push(data.convenio_id);
     }
-    if (data.observaciones !== undefined) {
-      fields.push(`observaciones = $${paramCount++}`);
-      values.push(data.observaciones);
+    if (data.nota !== undefined) {
+      fields.push(`nota = $${paramCount++}`);
+      values.push(data.nota);
     }
 
     if (fields.length === 0) {
@@ -365,7 +419,10 @@ export class OrdenesService {
     let updateFields = 'estado = $1, updated_at = CURRENT_TIMESTAMP';
     const values: any[] = [estado];
 
-    if (estado === 'CON_RESULTADOS') {
+    if (estado === 'MUESTRA_RECIBIDA') {
+      updateFields += ', muestra_recepcionada = true, fecha_recepcion = CURRENT_TIMESTAMP, usuario_recepcion_id = $2';
+      values.push(usuarioId);
+    } else if (estado === 'CON_RESULTADOS') {
       updateFields += ', fecha_resultados = CURRENT_TIMESTAMP, usuario_resultados_id = $2';
       values.push(usuarioId);
     } else if (estado === 'APROBADA') {
@@ -407,36 +464,54 @@ export class OrdenesService {
     }
   }
 
-  // ========== HELPERS ==========
+  async recepcionarMuestra(id: number, usuarioId: number): Promise<Orden> {
+    console.log('🔵 [RECEPCIONAR] Iniciando recepción para orden:', id, 'usuario:', usuarioId);
+    try {
+      const result = await pool.query(
+        `UPDATE ordenes 
+         SET muestra_recepcionada = true, 
+             estado = 'MUESTRA_RECIBIDA',
+             usuario_recepcion_id = $2,
+             fecha_recepcion = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP 
+         WHERE id = $1 AND estado = 'REGISTRADA'
+         RETURNING *`,
+        [id, usuarioId]
+      );
 
-  private async generateNumeroOrden(): Promise<string> {
-    const fecha = new Date();
-    const year = fecha.getFullYear();
-    const month = String(fecha.getMonth() + 1).padStart(2, '0');
-    
-    // Obtener el último número de orden del mes actual
-    const result = await pool.query(
-      `SELECT numero_orden FROM ordenes 
-       WHERE numero_orden LIKE $1 
-       ORDER BY numero_orden DESC 
-       LIMIT 1`,
-      [`${year}${month}%`]
-    );
+      console.log('🟢 [RECEPCIONAR] Resultado:', result.rows.length > 0 ? 'OK' : 'No rows');
 
-    let secuencia = 1;
-    if (result.rows.length > 0) {
-      const ultimoNumero = result.rows[0].numero_orden;
-      secuencia = parseInt(ultimoNumero.slice(-5)) + 1;
+      if (result.rows.length === 0) {
+        throw new Error('Orden no encontrada o no está en estado REGISTRADA');
+      }
+
+      return result.rows[0];
+    } catch (error: any) {
+      console.error('❌ [RECEPCIONAR] Error:', error.message);
+      throw error;
     }
-
-    return `${year}${month}${String(secuencia).padStart(5, '0')}`;
   }
 
-  private async calcularPrecios(
+  // ========== HELPERS ==========
+
+  private async generateNumeroOrden(): Promise<number> {
+    // Obtener el último número de atención
+    const result = await pool.query(
+      `SELECT COALESCE(MAX(numero_atencion), 0) + 1 as siguiente FROM ordenes`
+    );
+    
+    return result.rows[0].siguiente;
+  }
+
+  /**
+   * Calcular precios para análisis según tarifario (público)
+   */
+  async obtenerPreciosAnalisis(
     analisisIds: number[],
     convenioId?: number
-  ): Promise<Array<{ analisis_id: number; precio: number }>> {
-    const precios: Array<{ analisis_id: number; precio: number }> = [];
+  ): Promise<Array<{ analisis_id: number; nombre: string; precio: number }>> {
+    const precios: Array<{ analisis_id: number; nombre: string; precio: number }> = [];
+    let tarifarioId: number | null = null;
 
     if (convenioId) {
       // Obtener tarifario del convenio
@@ -449,35 +524,161 @@ export class OrdenesService {
         throw new Error('Convenio no tiene tarifario asignado');
       }
 
-      const tarifarioId = convenioResult.rows[0].tarifario_id;
-
-      // Obtener precios del tarifario
-      for (const analisisId of analisisIds) {
-        const precioResult = await pool.query(
-          'SELECT precio FROM tarifario_precios WHERE tarifario_id = $1 AND analisis_id = $2',
-          [tarifarioId, analisisId]
-        );
-
-        if (precioResult.rows.length === 0) {
-          throw new Error(`No se encontró precio para el análisis ID ${analisisId} en el tarifario`);
-        }
-
-        precios.push({
-          analisis_id: analisisId,
-          precio: parseFloat(precioResult.rows[0].precio),
-        });
-      }
+      tarifarioId = convenioResult.rows[0].tarifario_id;
     } else {
-      // Sin convenio, precio por defecto (se puede definir un tarifario base)
-      for (const analisisId of analisisIds) {
+      // Sin convenio (Particular), usar Tarifario General
+      const tarifarioGeneralResult = await pool.query(
+        "SELECT id FROM tarifarios WHERE nombre = 'Tarifario General' AND activo = true LIMIT 1"
+      );
+
+      if (tarifarioGeneralResult.rows.length === 0) {
+        throw new Error('No se encontró el Tarifario General para clientes particulares');
+      }
+
+      tarifarioId = tarifarioGeneralResult.rows[0].id;
+    }
+
+    // Obtener precios del tarifario con nombre del análisis
+    for (const analisisId of analisisIds) {
+      const result = await pool.query(
+        `SELECT a.nombre, COALESCE(tp.precio, 0) as precio
+         FROM analisis a
+         LEFT JOIN tarifario_precios tp ON tp.analisis_id = a.id AND tp.tarifario_id = $1
+         WHERE a.id = $2`,
+        [tarifarioId, analisisId]
+      );
+
+      if (result.rows.length > 0) {
         precios.push({
           analisis_id: analisisId,
-          precio: 0, // Definir lógica de precio base
+          nombre: result.rows[0].nombre,
+          precio: parseFloat(result.rows[0].precio),
         });
       }
     }
 
     return precios;
+  }
+
+  private async calcularPrecios(
+    analisisIds: number[],
+    convenioId?: number
+  ): Promise<Array<{ analisis_id: number; precio: number }>> {
+    const precios: Array<{ analisis_id: number; precio: number }> = [];
+    let tarifarioId: number | null = null;
+
+    if (convenioId) {
+      // Obtener tarifario del convenio
+      const convenioResult = await pool.query(
+        'SELECT tarifario_id FROM convenios WHERE id = $1',
+        [convenioId]
+      );
+
+      if (convenioResult.rows.length === 0 || !convenioResult.rows[0].tarifario_id) {
+        throw new Error('Convenio no tiene tarifario asignado');
+      }
+
+      tarifarioId = convenioResult.rows[0].tarifario_id;
+    } else {
+      // Sin convenio (Particular), usar Tarifario General
+      const tarifarioGeneralResult = await pool.query(
+        "SELECT id FROM tarifarios WHERE nombre = 'Tarifario General' AND activo = true LIMIT 1"
+      );
+
+      if (tarifarioGeneralResult.rows.length === 0) {
+        throw new Error('No se encontró el Tarifario General para clientes particulares');
+      }
+
+      tarifarioId = tarifarioGeneralResult.rows[0].id;
+    }
+
+    // Obtener precios del tarifario
+    for (const analisisId of analisisIds) {
+      const precioResult = await pool.query(
+        'SELECT precio FROM tarifario_precios WHERE tarifario_id = $1 AND analisis_id = $2',
+        [tarifarioId, analisisId]
+      );
+
+      if (precioResult.rows.length === 0) {
+        // Si no hay precio en el tarifario, usar precio 0 o lanzar error
+        console.warn(`No se encontró precio para análisis ID ${analisisId} en tarifario ID ${tarifarioId}`);
+        precios.push({
+          analisis_id: analisisId,
+          precio: 0,
+        });
+      } else {
+        precios.push({
+          analisis_id: analisisId,
+          precio: parseFloat(precioResult.rows[0].precio),
+        });
+      }
+    }
+
+    return precios;
+  }
+
+  async getMedicos(): Promise<string[]> {
+    const result = await pool.query(
+      `SELECT DISTINCT medico 
+       FROM ordenes 
+       WHERE medico IS NOT NULL AND medico != ''
+       ORDER BY medico`
+    );
+    return result.rows.map(row => row.medico);
+  }
+
+  // ========== ALERTAS ==========
+  
+  async getAlertasCounts(): Promise<{
+    ordenesAprobadas: number;
+    ordenesPendientesAprobar: number;
+    ordenesAprobadasDetalle: Array<{
+      id: number;
+      numero_atencion: number;
+      paciente_nombre: string;
+      fecha_aprobacion: Date;
+    }>;
+  }> {
+    // Contar órdenes con estado APROBADA (pendientes de imprimir)
+    const aprobadas = await pool.query(
+      `SELECT COUNT(*) as count FROM ordenes WHERE estado = 'APROBADA'`
+    );
+    
+    // Contar órdenes con estado CON_RESULTADOS (pendientes de aprobar)
+    const pendientesAprobar = await pool.query(
+      `SELECT COUNT(*) as count FROM ordenes WHERE estado = 'CON_RESULTADOS'`
+    );
+
+    // Detalle de órdenes aprobadas
+    const detalleAprobadas = await pool.query(`
+      SELECT 
+        o.id,
+        o.numero_atencion,
+        CONCAT(p.nombres, ' ', p.apellido_paterno, ' ', p.apellido_materno) as paciente_nombre,
+        o.fecha_aprobacion
+      FROM ordenes o
+      INNER JOIN pacientes p ON o.paciente_id = p.id
+      WHERE o.estado = 'APROBADA'
+      ORDER BY o.fecha_aprobacion DESC
+      LIMIT 20
+    `);
+
+    return {
+      ordenesAprobadas: parseInt(aprobadas.rows[0].count),
+      ordenesPendientesAprobar: parseInt(pendientesAprobar.rows[0].count),
+      ordenesAprobadasDetalle: detalleAprobadas.rows,
+    };
+  }
+
+  async marcarComoImpreso(ordenId: number): Promise<Orden | null> {
+    const result = await pool.query(
+      `UPDATE ordenes 
+       SET estado = 'IMPRESO', updated_at = CURRENT_TIMESTAMP 
+       WHERE id = $1 AND estado = 'APROBADA'
+       RETURNING *`,
+      [ordenId]
+    );
+    return result.rows[0] || null;
   }
 }
 
