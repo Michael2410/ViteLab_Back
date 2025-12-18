@@ -61,27 +61,35 @@ class IAService {
         const resultadosFormateados = this.formatearResultadosParaPrompt(ordenData);
 
         const prompt = `
-Actúa como un sistema experto de laboratorio clínico.
-Genera un párrafo de interpretación para el paciente basado en estos resultados de laboratorio:
+ROL:
+Actúa como un Asistente de Reportes de Laboratorio. Tu única función es transformar datos numéricos en un resumen descriptivo textual. NO eres un médico y NO debes diagnosticar.
 
 DATOS DEL PACIENTE:
 - Nombre: ${ordenData.paciente_nombres} ${ordenData.paciente_apellidos}
 - Sexo: ${ordenData.paciente_genero === 'M' ? 'Masculino' : 'Femenino'}
 - Edad: ${ordenData.paciente_edad} años
 
-RESULTADOS DE LABORATORIO:
+RESULTADOS DE LABORATORIO (Con indicación de estado):
 ${resultadosFormateados}
 
-INSTRUCCIONES PARA EL FORMATO DE IMPRESIÓN:
-1. Escribe en tercera persona, tono profesional pero empático.
-2. Comienza con "El paciente presenta..." o similar.
-3. Si todos los resultados están dentro de los rangos normales, indica: "Los resultados del perfil analizado se encuentran dentro de los rangos fisiológicos esperados."
-4. Si hay valores fuera de rango, menciónalos brevemente sin alarmar, sugiriendo consultar con su médico.
-5. NO uses formato Markdown (negritas, títulos, asteriscos), solo texto plano limpio para imprimir en PDF.
-6. NO incluyas recomendaciones médicas específicas ni diagnósticos.
-7. Máximo 100 palabras.
-8. Finaliza indicando que estos resultados deben ser evaluados por su médico tratante.
-        `.trim();
+REGLAS ESTRICTAS DE SEGURIDAD (Critical Safety Rails):
+1. PROHIBIDO DIAGNOSTICAR: Nunca uses palabras como "anemia", "diabetes", "infección", "insuficiencia", "hepatitis", "cáncer", "riesgo", "sugiere" o "indica".
+2. LENGUAJE NEUTRO: Usa exclusivamente términos de posición: "superior al rango de referencia", "inferior al rango de referencia", "dentro de los parámetros esperados".
+3. NO ALARMISTA: Evita adjetivos como "peligroso", "preocupante", "severo", "crítico". Usa "significativamente fuera de rango" si la desviación es grande.
+
+INSTRUCCIONES DE FORMATO:
+1. Escribe en un solo párrafo continuo.
+2. Usa tercera persona (ej. "Se observa...", "El reporte muestra...").
+3. Solo Texto Plano (Sin markdown, sin negritas, sin viñetas).
+4. Máximo 80 palabras (Sé conciso).
+
+LÓGICA DE GENERACIÓN:
+- CASO A (Todo Normal): Si todos los valores están dentro del rango, escribe: "Los resultados de los análisis realizados se encuentran dentro de los intervalos de referencia biológica estándar para el sexo y edad del paciente."
+- CASO B (Valores Fuera de Rango): Lista los parámetros fuera de rango agrupándolos (ej. "se observan valores por fuera del límite superior en [NombreExamen1] y [NombreExamen2], así como valores inferiores al rango en [NombreExamen3]").
+
+CIERRE OBLIGATORIO:
+Finaliza siempre con la frase exacta: "Estos resultados son datos técnicos que requieren la interpretación clínica integral de su médico tratante."
+`.trim();
 
         const result = await model.generateContent(prompt);
         const response = await result.response;
@@ -94,24 +102,24 @@ INSTRUCCIONES PARA EL FORMATO DE IMPRESIÓN:
       } catch (error: any) {
         console.error(`❌ Error con modelo ${modelName}:`, error?.message || error);
         lastError = error;
-        
+
         // Si es error 404 (modelo no encontrado), probar el siguiente
         if (error?.status === 404) {
           continue;
         }
-        
+
         // Si es error de cuota (429), esperar y reintentar
         if (error?.status === 429 && reintentos > 0) {
           console.log(`⏳ Cuota excedida. Reintentando en 60 segundos... (${reintentos} intentos restantes)`);
           await this.sleep(60000);
           return this.generarInterpretacion(ordenData, reintentos - 1);
         }
-        
+
         // Para otros errores, probar siguiente modelo
         continue;
       }
     }
-    
+
     // Si ningún modelo funcionó
     console.error('❌ Ningún modelo de Gemini disponible:', lastError);
     throw new Error('No se pudo generar la interpretación de resultados. Ningún modelo disponible.');
@@ -132,10 +140,10 @@ INSTRUCCIONES PARA EL FORMATO DE IMPRESIÓN:
 
     for (const analisis of orden.analisis) {
       lineas.push(`\n[${analisis.analisis_nombre}]`);
-      
+
       for (const comp of analisis.componentes) {
-        const rangoStr = comp.valores_referenciales.length > 0 
-          ? `(Rango: ${comp.valores_referenciales.join(', ')})` 
+        const rangoStr = comp.valores_referenciales.length > 0
+          ? `(Rango: ${comp.valores_referenciales.join(', ')})`
           : '';
         const unidad = comp.unidad_medida || '';
         lineas.push(`- ${comp.componente_nombre}: ${comp.resultado_valor} ${unidad} ${rangoStr}`);

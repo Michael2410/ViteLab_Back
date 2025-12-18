@@ -1,10 +1,45 @@
 import app from './app';
 import { testConnection } from './config/database';
+import { createServer } from 'http';
+import { Server as SocketIOServer } from 'socket.io';
 import dotenv from 'dotenv';
+import { whatsappService } from './modules/whatsapp';
 
 dotenv.config();
 
 const PORT = process.env.PORT || 3000;
+
+// Crear servidor HTTP
+const httpServer = createServer(app);
+
+// Configurar Socket.io
+const io = new SocketIOServer(httpServer, {
+  cors: {
+    origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
+});
+
+// Manejar conexiones de Socket.io
+io.on('connection', (socket) => {
+  console.log(`🔌 Cliente conectado: ${socket.id}`);
+  
+  // Enviar estado actual de WhatsApp al conectarse
+  whatsappService.getStatus().then((status) => {
+    socket.emit('whatsapp:status', {
+      state: whatsappService.getConnectionState(),
+      ...status
+    });
+  });
+  
+  socket.on('disconnect', () => {
+    console.log(`🔌 Cliente desconectado: ${socket.id}`);
+  });
+});
+
+// Pasar Socket.io al servicio de WhatsApp
+whatsappService.setSocketIO(io);
 
 // Iniciar servidor
 const startServer = async () => {
@@ -17,8 +52,8 @@ const startServer = async () => {
       process.exit(1);
     }
 
-    // Iniciar servidor
-    app.listen(PORT, () => {
+    // Iniciar servidor HTTP con Socket.io
+    httpServer.listen(PORT, () => {
       console.log(`
 ╔════════════════════════════════════════════╗
 ║                                            ║
@@ -26,11 +61,26 @@ const startServer = async () => {
 ║                                            ║
 ║     🚀 Server running on port ${PORT}        ║
 ║     📚 Docs: http://localhost:${PORT}/api-docs ║
+║     🔌 Socket.io: Enabled                  ║
 ║     🌍 Environment: ${process.env.NODE_ENV || 'development'}       ║
 ║                                            ║
 ╚════════════════════════════════════════════╝
       `);
     });
+
+    // Intentar reconectar WhatsApp si hay sesión guardada
+    setTimeout(async () => {
+      try {
+        const status = await whatsappService.getStatus();
+        if (!status.isConnected) {
+          console.log('🔄 Intentando reconectar WhatsApp...');
+          await whatsappService.tryReconnect();
+        }
+      } catch (err) {
+        console.log('ℹ️ No hay sesión de WhatsApp guardada');
+      }
+    }, 3000);
+
   } catch (error) {
     console.error('❌ Error al iniciar el servidor:', error);
     process.exit(1);

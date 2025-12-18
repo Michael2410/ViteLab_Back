@@ -19,14 +19,14 @@ export class AuthController {
     const validation = loginSchema.safeParse(req.body);
 
     if (!validation.success) {
-      return errorResponse(res, 'Error de validación', validation.error.errors, 400);
+      return errorResponse(res, 'Error de validación', 400);
     }
 
     try {
       const result = await authService.login(validation.data);
       return successResponse(res, result, 'Login exitoso', 200);
     } catch (error: any) {
-      return errorResponse(res, error.message, null, 401);
+      return errorResponse(res, error.message, 401);
     }
   });
 
@@ -37,14 +37,14 @@ export class AuthController {
     const validation = refreshTokenSchema.safeParse(req.body);
 
     if (!validation.success) {
-      return errorResponse(res, 'Error de validación', validation.error.errors, 400);
+      return errorResponse(res, 'Error de validación', 400);
     }
 
     try {
       const result = await authService.refreshToken(validation.data.refreshToken);
       return successResponse(res, result, 'Token renovado exitosamente', 200);
     } catch (error: any) {
-      return errorResponse(res, error.message, null, 401);
+      return errorResponse(res, error.message, 401);
     }
   });
 

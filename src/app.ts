@@ -23,6 +23,7 @@ import uploadsRoutes from './modules/uploads/uploads.routes';
 import sistemaRoutes from './modules/sistema/sistema.routes';
 import reportesRoutes from './modules/reportes/reportes.routes';
 import rolesRoutes from './modules/roles/roles.routes';
+import whatsappRoutes from './modules/whatsapp/whatsapp.routes';
 
 dotenv.config();
 
@@ -144,6 +145,9 @@ app.use('/api/reportes', reportesRoutes);
 
 // Módulo de Roles y Permisos
 app.use('/api/roles', rolesRoutes);
+
+// Módulo de WhatsApp
+app.use('/api/whatsapp', whatsappRoutes);
 
 // ============================================
 // ERROR HANDLING

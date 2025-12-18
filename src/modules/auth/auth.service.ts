@@ -479,8 +479,8 @@ export class AuthService {
    */
   private generateAccessToken(payload: JwtPayload): string {
     return jwt.sign(payload, process.env.JWT_ACCESS_SECRET || 'access_secret', {
-      expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '8h', // Extendido para desarrollo
-    });
+      expiresIn: (process.env.JWT_ACCESS_EXPIRES_IN || '8h') as string,
+    } as jwt.SignOptions);
   }
 
   /**
@@ -488,7 +488,7 @@ export class AuthService {
    */
   private generateRefreshToken(payload: JwtPayload): string {
     return jwt.sign(payload, process.env.JWT_REFRESH_SECRET || 'refresh_secret', {
-      expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
-    });
+      expiresIn: (process.env.JWT_REFRESH_EXPIRES_IN || '7d') as string,
+    } as jwt.SignOptions);
   }
 }
