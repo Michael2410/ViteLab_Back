@@ -168,7 +168,8 @@ export class OrdenesService {
           'fecha_nacimiento', p.fecha_nacimiento,
           'genero', p.genero,
           'telefono', p.telefono,
-          'email', p.email
+          'email', p.email,
+          'direccion', p.direccion
         ) as paciente,
         json_build_object(
           'id', s.id,
@@ -332,7 +333,7 @@ export class OrdenesService {
         // A. Eliminar análisis retirados de la orden (y sus resultados asociados)
         const paraEliminar = analisisActuales.filter((oa) => !nuevosAnalisisIds.has(oa.analisis_id));
         for (const oa of paraEliminar) {
-          await client.query('DELETE FROM resultados WHERE orden_id = $1 AND analisis_id = $2', [id, oa.analisis_id]);
+          await client.query('DELETE FROM resultados WHERE orden_analisis_id = $1', [oa.id]);
           await client.query('DELETE FROM orden_analisis WHERE id = $1', [oa.id]);
         }
 

@@ -54,9 +54,10 @@ class WhatsAppService {
       throw new Error('Ya hay un inicio de sesión en progreso');
     }
 
-    // Si ya está conectado, no hacer nada
+    // Si ya está conectado, emitir estado y retornar
     if (this.connectionState === 'connected' && this.socket) {
       console.log('✅ WhatsApp ya está conectado');
+      this.emitStatus('connected', { phoneNumber: this.phoneNumber });
       return;
     }
 
