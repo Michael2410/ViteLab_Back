@@ -1,4 +1,5 @@
 import pool from '../../config/database';
+import { emitEvent } from '../../config/socket';
 import { iaService, type OrdenParaIA, type AnalisisParaIA } from '../ia/ia.service';
 import type {
   ResultadoDetalle,
@@ -171,6 +172,10 @@ class ResultadosService {
       }
 
       await client.query('COMMIT');
+
+      if (resultadosCreados.length > 0) {
+        emitEvent('dashboard:update');
+      }
 
       return {
         created: resultadosCreados.length,
@@ -443,7 +448,10 @@ class ResultadosService {
       throw new Error('Resultado no encontrado');
     }
 
-    return await this.getResultadoById(id);
+    const resultadoActualizado = await this.getResultadoById(id);
+    emitEvent('resultado:actualizado', { resultado: resultadoActualizado });
+    emitEvent('dashboard:update');
+    return resultadoActualizado;
   }
 
   // ============================================
@@ -621,6 +629,9 @@ class ResultadosService {
 
       await client.query('COMMIT');
 
+      emitEvent('resultado:aprobado', { ordenId });
+      emitEvent('dashboard:update');
+
       // ✨ Generar interpretación IA en segundo plano (sin bloquear la respuesta)
       this.generarInterpretacionIA(ordenId).catch(err => {
         console.error('Error al generar interpretación IA:', err);
@@ -715,6 +726,11 @@ class ResultadosService {
       }
 
       await client.query('COMMIT');
+
+      if (guardados > 0) {
+        emitEvent('resultado:guardado', { ordenId, guardados });
+        emitEvent('dashboard:update');
+      }
 
       return { message: 'Resultados guardados exitosamente', guardados };
     } catch (error) {

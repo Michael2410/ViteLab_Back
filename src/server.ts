@@ -4,6 +4,7 @@ import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import dotenv from 'dotenv';
 import { whatsappService } from './modules/whatsapp';
+import { setSocketIO } from './config/socket';
 
 dotenv.config();
 
@@ -38,8 +39,9 @@ io.on('connection', (socket) => {
   });
 });
 
-// Pasar Socket.io al servicio de WhatsApp
+// Pasar Socket.io al servicio de WhatsApp y al hub centralizado
 whatsappService.setSocketIO(io);
+setSocketIO(io);
 
 // Iniciar servidor
 const startServer = async () => {

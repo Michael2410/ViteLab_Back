@@ -1,4 +1,5 @@
 import { pool } from '../../config/database';
+import { emitEvent } from '../../config/socket';
 import { iaService } from '../ia/ia.service';
 import type {
   Paciente,
@@ -125,7 +126,10 @@ export class OrdenesService {
       });
 
       // 6. Obtener orden completa con detalles
-      return await this.getOrdenById(orden.id);
+      const ordenDetalle = await this.getOrdenById(orden.id);
+      emitEvent('orden:creada', { orden: ordenDetalle });
+      emitEvent('dashboard:update');
+      return ordenDetalle;
 
     } catch (error) {
       await client.query('ROLLBACK');
@@ -369,7 +373,10 @@ export class OrdenesService {
       await client.query('COMMIT');
 
       // 5. Retornar orden actualizada
-      return await this.getOrdenById(id);
+      const ordenDetalle = await this.getOrdenById(id);
+      emitEvent('orden:actualizada', { orden: ordenDetalle });
+      emitEvent('dashboard:update');
+      return ordenDetalle;
 
     } catch (error) {
       await client.query('ROLLBACK');
@@ -549,7 +556,10 @@ export class OrdenesService {
       values
     );
 
-    return result.rows[0];
+    const ordenActualizada = result.rows[0];
+    emitEvent('orden:estado_cambiado', { orden: ordenActualizada });
+    emitEvent('dashboard:update');
+    return ordenActualizada;
   }
 
   async deleteOrden(id: number): Promise<boolean> {
@@ -565,6 +575,10 @@ export class OrdenesService {
       const result = await client.query('DELETE FROM ordenes WHERE id = $1 RETURNING id', [id]);
 
       await client.query('COMMIT');
+      if (result.rows.length > 0) {
+        emitEvent('orden:eliminada', { ordenId: id });
+        emitEvent('dashboard:update');
+      }
       return result.rows.length > 0;
 
     } catch (error) {
@@ -596,7 +610,11 @@ export class OrdenesService {
         throw new Error('Orden no encontrada o no está en estado REGISTRADA');
       }
 
-      return result.rows[0];
+      const ordenActualizada = result.rows[0];
+      emitEvent('orden:estado_cambiado', { orden: ordenActualizada });
+      emitEvent('dashboard:update');
+
+      return ordenActualizada;
     } catch (error: any) {
       console.error('❌ [RECEPCIONAR] Error:', error.message);
       throw error;
@@ -789,7 +807,12 @@ export class OrdenesService {
        RETURNING *`,
       [ordenId]
     );
-    return result.rows[0] || null;
+    const orden = result.rows[0] || null;
+    if (orden) {
+      emitEvent('orden:estado_cambiado', { orden });
+      emitEvent('dashboard:update');
+    }
+    return orden;
   }
 
   /**
