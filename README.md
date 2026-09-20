@@ -1,198 +1,130 @@
-# 🧪 ViteLab Backend - Sistema de Laboratorio Clínico (LIMS)
+# ViteLab Backend - Sistema de Laboratorio Clínico (LIMS)
 
-API REST para el sistema de gestión de laboratorio clínico ViteLab.
+API REST desarrollada con Node.js, Express y TypeScript para la gestión integral de laboratorios clínicos. Incluye módulos de órdenes de atención, ingreso y aprobación de resultados, catálogo de análisis, tarifarios, integración con WhatsApp (Baileys), inteligencia artificial (Google Gemini) y control de accesos granular basado en roles y permisos.
 
-## 🚀 Tecnologías
+---
 
-- **Node.js** + **Express** + **TypeScript**
-- **PostgreSQL** (base de datos)
-- **Zod** (validación de schemas)
-- **JWT** (autenticación con access + refresh tokens)
-- **bcrypt** (hash de contraseñas)
-- **Swagger/OpenAPI** (documentación)
-- **Nodemailer** (envío de emails)
+## Tecnologías
 
-## 📁 Estructura del Proyecto
+- **Runtime:** Node.js 20+
+- **Framework:** Express 5 + TypeScript
+- **Base de Datos:** PostgreSQL
+- **WebSockets:** Socket.io (tiempo real)
+- **Autenticación:** JWT (Access + Refresh tokens) & bcrypt
+- **Integraciones:** WhatsApp Web (Baileys), Google Gemini AI, PeruDevs (DNI)
+- **Documentación:** Swagger / OpenAPI 3.0 (`/api-docs`)
 
-```
-src/
-├── config/
-│   └── database.ts          # Configuración de PostgreSQL
-├── middleware/
-│   └── auth.middleware.ts   # Middlewares de autenticación
-├── modules/
-│   └── auth/                # Módulo de autenticación
-│       ├── auth.controller.ts
-│       ├── auth.service.ts
-│       ├── auth.routes.ts
-│       ├── auth.schema.ts
-│       └── auth.types.ts
-├── types/
-│   └── api.types.ts         # Tipos globales
-├── utils/
-│   └── response.utils.ts    # Helpers de respuesta
-├── app.ts                   # Configuración de Express
-└── server.ts                # Punto de entrada
-```
+---
 
-## 🔧 Instalación
+## Variables de Entorno
 
-### 1. Instalar dependencias
-
-```bash
-npm install
-```
-
-### 2. Configurar PostgreSQL
-
-Ejecutar el archivo `database.sql` en PostgreSQL:
-
-```bash
-psql -U postgres -d postgres -f database.sql
-```
-
-Esto creará:
-- ✅ Base de datos `vitelab_db`
-- ✅ Todas las tablas con relaciones
-- ✅ Datos iniciales (roles, permisos, usuario admin)
-
-### 3. Configurar variables de entorno
-
-Copia `.env.example` a `.env` y configura tus credenciales:
+Copia el archivo `.env.example` a `.env` y configura tus credenciales:
 
 ```bash
 cp .env.example .env
 ```
 
-Edita `.env`:
-```env
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=vitelab_db
-DB_USER=postgres
-DB_PASSWORD=tu_password
-```
+---
 
-### 4. Iniciar servidor en desarrollo
+## Métodos de Despliegue
 
+### 1. Despliegue Local (Desarrollo / Producción)
+
+#### Prerrequisitos:
+- Node.js 20+ y npm instalados.
+- Instancia de PostgreSQL activa con la base de datos `vitelab_db` creada y el script `database.sql` ejecutado.
+
+#### Pasos:
 ```bash
+# 1. Instalar dependencias
+npm install
+
+# 2. Iniciar en modo desarrollo (Hot Reload con ts-node-dev)
 npm run dev
+
+# 3. O compilar TypeScript y ejecutar en producción
+npm run build
+npm start
 ```
+* **Acceso API:** `http://localhost:3000`
+* **Documentación Swagger:** `http://localhost:3000/api-docs`
+* **Healthcheck:** `http://localhost:3000/health`
 
-El servidor se ejecutará en: http://localhost:3000
+---
 
-## 📚 Documentación API (Swagger)
+### 2. Despliegue con Docker (Contenedor Individual)
 
-Una vez iniciado el servidor, accede a:
+El proyecto incluye un `Dockerfile` optimizado multi-stage (builder + deps + runner) con usuario no-root para seguridad.
 
-**http://localhost:3000/api-docs**
+#### Pasos:
+```bash
+# 1. Construir la imagen Docker
+docker build -t vitelab-back .
 
-## 🔐 Autenticación
-
-### Usuario por defecto
-
-Al ejecutar `database.sql`, se crea un usuario administrador:
-
-- **Usuario**: `admin`
-- **Contraseña**: `admin123`
-- **Rol**: `SUPER_ADMIN`
-
-### Flujo de autenticación
-
-1. **Login**: `POST /api/auth/login`
-   - Retorna `accessToken` (15 min) y `refreshToken` (7 días)
-
-2. **Proteger rutas**: Agregar header:
-   ```
-   Authorization: Bearer {accessToken}
-   ```
-
-3. **Renovar token**: `POST /api/auth/refresh`
-   - Enviar `refreshToken` para obtener nuevos tokens
-
-4. **Logout**: `POST /api/auth/logout`
-
-## 🛣️ Rutas Disponibles
-
-### Auth & Users
-
-| Método | Ruta | Descripción | Autenticación |
-|--------|------|-------------|---------------|
-| POST | `/api/auth/login` | Login | ❌ |
-| POST | `/api/auth/refresh` | Renovar token | ❌ |
-| POST | `/api/auth/logout` | Logout | ✅ |
-| GET | `/api/auth/me` | Obtener usuario actual con permisos | ✅ |
-| GET | `/api/auth/users` | Listar usuarios | ✅ |
-| GET | `/api/auth/users/:id` | Obtener usuario por ID | ✅ |
-| POST | `/api/auth/users` | Crear usuario | ✅ |
-| PUT | `/api/auth/users/:id` | Actualizar usuario | ✅ |
-| DELETE | `/api/auth/users/:id` | Eliminar usuario | ✅ |
-
-## 🔒 Sistema de Permisos
-
-El sistema implementa permisos granulares por módulo/submodulo/acción.
-
-Ejemplo:
-```typescript
-// Requiere permiso específico
-router.get('/users', 
-  authenticateToken, 
-  requirePermissions(['auth.users.read']), 
-  controller.getAllUsers
-);
+# 2. Ejecutar el contenedor montando los volúmenes persistentes
+docker run -d \
+  --name vitelab-back \
+  -p 3000:3000 \
+  --env-file .env \
+  -v $(pwd)/uploads:/app/uploads \
+  -v $(pwd)/whatsapp_auth:/app/whatsapp_auth \
+  --restart unless-stopped \
+  vitelab-back
 ```
+> **Nota:** Los volúmenes montados (`uploads` y `whatsapp_auth`) garantizan que las firmas médicas, logos institucionales y la sesión de WhatsApp Web persistan tras reiniciar el contenedor.
 
-### Permisos disponibles
+---
 
-- `auth.users.*` - Gestión de usuarios
-- `auth.roles.*` - Gestión de roles
-- `orders.*` - Gestión de órdenes
-- `results.*` - Gestión de resultados
-- `catalogs.*` - Gestión de catálogos
-- `tariffs.*` - Gestión de tarifarios
-- `settings.*` - Configuración del sistema
+### 3. Despliegue con Docker Compose (Stack Completo)
 
-## 📦 Scripts NPM
+Desde la raíz del repositorio general (`ViteLab`), el archivo `docker-compose.yml` orquesta de forma conjunta el Backend y el Frontend en una misma red:
 
 ```bash
-npm run dev      # Iniciar en modo desarrollo (hot reload)
-npm run build    # Compilar TypeScript a JavaScript
-npm start        # Iniciar servidor en producción
+# 1. Construir y levantar todos los contenedores en segundo plano
+docker compose up -d --build
+
+# 2. Consultar logs del backend en tiempo real
+docker compose logs -f backend
+
+# 3. Detener y remover contenedores
+docker compose down
 ```
 
-## 🗄️ Base de Datos
+* **Backend API:** `http://localhost:3000`
+* **Frontend Web:** `http://localhost:8080`
+* **Red interna:** `vitelab-network` (los contenedores se comunican entre sí por nombre de servicio).
 
-### Tablas principales
+---
 
-- `usuarios`, `roles`, `permisos`, `roles_permisos`
-- `pacientes`, `ordenes`, `orden_analisis`, `resultados`
-- `analisis`, `componentes`
-- `tarifarios`, `tarifario_precios`, `convenios`
-- `sedes`, `tipos_cliente`, `areas`, `metodos`
-- `configuracion_sistema`
+### 4. Despliegue en Entornos Gratuitos (Demo en la Nube: Render + Neon)
 
-### Estados de Orden
+Para demostraciones públicas 24/7 sin costo y sin necesidad de mantener encendida tu máquina local:
 
-1. **REGISTRADA** - Orden creada
-2. **CON_RESULTADOS** - Resultados ingresados
-3. **APROBADA** - Resultados aprobados (puede generar PDF)
+#### A. Base de Datos en Neon.tech (PostgreSQL Serverless Gratuito):
+1. Regístrate en [Neon.tech](https://neon.tech) y crea un proyecto llamado `vitelab-db`.
+2. En la pestaña **SQL Editor** de Neon, ejecuta tu script `database.sql` o restaura tu backup:
+   ```bash
+   psql "TU_DATABASE_URL_DE_NEON" < database.sql
+   ```
+3. Copia tu cadena de conexión `DATABASE_URL` (que incluye `?sslmode=require`).
 
-## 🧪 Testing
+#### B. API Backend en Render.com (Web Service Gratuito):
+1. Regístrate en [Render.com](https://render.com) y conecta tu repositorio `ViteLab_Back`.
+2. Haz clic en **New + > Web Service** y selecciona el repositorio.
+3. Parámetros de configuración:
+   - **Environment / Runtime:** `Node`
+   - **Branch:** `main` (o `Deploy_Vercel`)
+   - **Build Command:** `npm install && npm run build`
+   - **Start Command:** `npm start`
+   - **Plan:** `Free`
+4. En la sección **Environment Variables**, define:
+   - `DATABASE_URL` = *(Cadena de conexión de Neon)*
+   - `NODE_ENV` = `production`
+   - `JWT_ACCESS_SECRET` = `tu_secreto_access`
+   - `JWT_REFRESH_SECRET` = `tu_secreto_refresh`
+   - `CORS_ORIGIN` = `*` (o la URL de tu frontend en Vercel)
+   - `GEMINI_API_KEY` = `tu_api_key_de_gemini`
+   - `DNI_API_KEY` = `tu_api_key_perudevs`
+5. Haz clic en **Deploy Web Service**.
 
-```bash
-# Próximamente
-npm test
-```
-
-## 📝 Próximos Módulos
-
-- ✅ Auth (Completado)
-- ⏳ Orders (Órdenes de atención)
-- ⏳ Results (Ingreso y aprobación de resultados)
-- ⏳ Catalogs (Análisis, componentes, áreas, métodos, convenios)
-- ⏳ Tariffs (Tarifarios y precios)
-- ⏳ Settings (Configuración general del sistema)
-
-## 👨‍💻 Desarrollo
-
-Desarrollado con ❤️ para ViteLab
+> Render te otorgará una URL pública HTTPS directa (ejemplo: `https://vitelab-api.onrender.com`).
