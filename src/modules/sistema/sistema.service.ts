@@ -183,10 +183,10 @@ class SistemaService {
           [sede.id]
         );
         
-        // Órdenes aprobadas hoy
+        // Órdenes aprobadas listas para entrega
         const aprobadasResult = await pool.query(
           `SELECT COUNT(*) as count FROM ordenes 
-           WHERE sede_id = $1 AND estado = 'APROBADA' AND DATE(fecha_registro) = CURRENT_DATE`,
+           WHERE sede_id = $1 AND estado = 'APROBADA'`,
           [sede.id]
         );
         
