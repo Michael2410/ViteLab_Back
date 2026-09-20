@@ -32,8 +32,9 @@ Thumbs.db
 *.swo
 *~
 
-# Uploads
-uploads/
+# Uploads (solo la carpeta raíz de archivos subidos)
+/uploads/
+/whatsapp_auth/
 temp/
 
 # Tests

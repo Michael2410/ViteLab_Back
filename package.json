@@ -19,8 +19,18 @@
   "license": "ISC",
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@types/bcrypt": "^6.0.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.5",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.0.0",
+    "@types/node": "^24.10.1",
+    "@types/nodemailer": "^7.0.3",
+    "@types/pg": "^8.15.6",
+    "@types/puppeteer": "^5.4.7",
     "@types/qrcode": "^1.5.6",
+    "@types/swagger-jsdoc": "^6.0.4",
+    "@types/swagger-ui-express": "^4.1.8",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
@@ -37,20 +47,10 @@
     "socket.io": "^4.8.1",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
+    "typescript": "^5.9.3",
     "zod": "^4.1.12"
   },
   "devDependencies": {
-    "@types/bcrypt": "^6.0.0",
-    "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.5",
-    "@types/jsonwebtoken": "^9.0.10",
-    "@types/node": "^24.10.1",
-    "@types/nodemailer": "^7.0.3",
-    "@types/pg": "^8.15.6",
-    "@types/puppeteer": "^5.4.7",
-    "@types/swagger-jsdoc": "^6.0.4",
-    "@types/swagger-ui-express": "^4.1.8",
-    "ts-node-dev": "^2.0.0",
-    "typescript": "^5.9.3"
+    "ts-node-dev": "^2.0.0"
   }
 }

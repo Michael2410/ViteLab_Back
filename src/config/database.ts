@@ -30,7 +30,7 @@ pool.on('connect', () => {
 });
 
 // Evento de error
-pool.on('error', (err) => {
+pool.on('error', (err: Error) => {
   console.error('❌ Error inesperado en la conexión de PostgreSQL:', err);
   process.exit(-1);
 });
