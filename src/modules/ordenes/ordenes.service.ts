@@ -1,4 +1,5 @@
 import { pool } from '../../config/database';
+import { iaService } from '../ia/ia.service';
 import type {
   Paciente,
   CreatePacienteInput,
@@ -106,14 +107,22 @@ export class OrdenesService {
 
       // 5. Crear orden_analisis con precios y muestras_ids
       for (const analisisItem of data.analisis) {
-        const precioInfo = precios.find(p => p.analisis_id === analisisItem.id);
+        const precioCalculado = precios.find(p => p.analisis_id === analisisItem.id)?.precio || 0;
+        const precioFinal = (analisisItem.precio !== undefined && analisisItem.precio !== null)
+          ? analisisItem.precio
+          : precioCalculado;
         await client.query(
           'INSERT INTO orden_analisis (orden_id, analisis_id, precio, muestras_ids) VALUES ($1, $2, $3, $4)',
-          [orden.id, analisisItem.id, precioInfo?.precio || 0, analisisItem.muestras_ids || []]
+          [orden.id, analisisItem.id, precioFinal, analisisItem.muestras_ids || []]
         );
       }
 
       await client.query('COMMIT');
+
+      // ✨ Generar condiciones pre-analíticas con IA en segundo plano
+      this.generarCondicionesPreanaliticasIA(orden.id, paciente, data.analisis).catch(err => {
+        console.error('Error al generar condiciones pre-analíticas IA:', err);
+      });
 
       // 6. Obtener orden completa con detalles
       return await this.getOrdenById(orden.id);
@@ -146,6 +155,7 @@ export class OrdenesService {
         o.fecha_aprobacion,
         o.usuario_aprobacion_id,
         o.muestra_recepcionada,
+        o.condiciones_preanaliticas,
         o.created_at,
         o.updated_at,
         json_build_object(
@@ -234,6 +244,140 @@ export class OrdenesService {
     };
   }
 
+  async updateOrden(id: number, data: UpdateOrdenInput): Promise<OrdenDetalle> {
+    const client = await pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      // 1. Verificar existencia de la orden
+      const ordenActualRes = await client.query('SELECT * FROM ordenes WHERE id = $1', [id]);
+      if (ordenActualRes.rows.length === 0) {
+        throw new Error('Orden no encontrada');
+      }
+      const ordenActual = ordenActualRes.rows[0];
+
+      // 2. Actualizar datos del paciente si fueron provistos
+      if (data.paciente) {
+        const nombreCompleto = `${data.paciente.apellido_paterno} ${data.paciente.apellido_materno}, ${data.paciente.nombres}`;
+        await client.query(
+          `UPDATE pacientes SET 
+            nombres = $1, 
+            apellido_paterno = $2, 
+            apellido_materno = $3, 
+            nombre_completo = $4, 
+            fecha_nacimiento = $5, 
+            genero = $6, 
+            telefono = $7, 
+            email = $8, 
+            direccion = $9,
+            updated_at = CURRENT_TIMESTAMP
+           WHERE id = $10`,
+          [
+            data.paciente.nombres,
+            data.paciente.apellido_paterno,
+            data.paciente.apellido_materno,
+            nombreCompleto,
+            data.paciente.fecha_nacimiento,
+            data.paciente.genero,
+            data.paciente.telefono || null,
+            data.paciente.email || null,
+            data.paciente.direccion || null,
+            ordenActual.paciente_id,
+          ]
+        );
+      }
+
+      // 3. Actualizar cabecera de la orden
+      const updates: string[] = ['updated_at = CURRENT_TIMESTAMP'];
+      const values: any[] = [];
+      let pIdx = 1;
+
+      if (data.sede_id !== undefined) {
+        updates.push(`sede_id = $${pIdx++}`);
+        values.push(data.sede_id);
+      }
+      if (data.tipo_cliente_id !== undefined) {
+        updates.push(`tipo_cliente_id = $${pIdx++}`);
+        values.push(data.tipo_cliente_id);
+      }
+      if (data.convenio_id !== undefined) {
+        updates.push(`convenio_id = $${pIdx++}`);
+        values.push(data.convenio_id || null);
+      }
+      if (data.medico !== undefined) {
+        updates.push(`medico = $${pIdx++}`);
+        values.push(data.medico || null);
+      }
+      if (data.nota !== undefined) {
+        updates.push(`nota = $${pIdx++}`);
+        values.push(data.nota || null);
+      }
+
+      values.push(id);
+      await client.query(
+        `UPDATE ordenes SET ${updates.join(', ')} WHERE id = $${pIdx}`,
+        values
+      );
+
+      // 4. Sincronización diferencial de análisis si fueron provistos
+      if (data.analisis && Array.isArray(data.analisis)) {
+        const analisisActualesRes = await client.query(
+          'SELECT id, analisis_id, precio, muestras_ids FROM orden_analisis WHERE orden_id = $1',
+          [id]
+        );
+        const analisisActuales = analisisActualesRes.rows;
+        const nuevosAnalisisIds = new Set(data.analisis.map((a) => a.id));
+
+        // A. Eliminar análisis retirados de la orden (y sus resultados asociados)
+        const paraEliminar = analisisActuales.filter((oa) => !nuevosAnalisisIds.has(oa.analisis_id));
+        for (const oa of paraEliminar) {
+          await client.query('DELETE FROM resultados WHERE orden_id = $1 AND analisis_id = $2', [id, oa.analisis_id]);
+          await client.query('DELETE FROM orden_analisis WHERE id = $1', [oa.id]);
+        }
+
+        // B. Precios de referencia según tarifario
+        const convenioId = data.convenio_id !== undefined ? data.convenio_id : ordenActual.convenio_id;
+        const analisisIds = data.analisis.map((a) => a.id);
+        const preciosTarifario = await this.calcularPrecios(analisisIds, convenioId);
+
+        // C. Procesar cada análisis (actualizar existentes o insertar nuevos)
+        for (const item of data.analisis) {
+          const precioCalculado = preciosTarifario.find((p) => p.analisis_id === item.id)?.precio || 0;
+          const precioFinal = (item.precio !== undefined && item.precio !== null)
+            ? item.precio
+            : precioCalculado;
+
+          const existente = analisisActuales.find((oa) => oa.analisis_id === item.id);
+          if (existente) {
+            // Actualizar precio y muestras sin tocar resultados existentes
+            await client.query(
+              `UPDATE orden_analisis SET precio = $1, muestras_ids = $2 WHERE id = $3`,
+              [precioFinal, item.muestras_ids || [], existente.id]
+            );
+          } else {
+            // Insertar nuevo análisis agregado a la orden
+            await client.query(
+              `INSERT INTO orden_analisis (orden_id, analisis_id, precio, muestras_ids) VALUES ($1, $2, $3, $4)`,
+              [id, item.id, precioFinal, item.muestras_ids || []]
+            );
+          }
+        }
+      }
+
+      await client.query('COMMIT');
+
+      // 5. Retornar orden actualizada
+      return await this.getOrdenById(id);
+
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async getOrdenes(filters: OrdenFilters): Promise<PaginatedResponse<Orden>> {
     const page = filters.page || 1;
     const limit = filters.limit || 20;
@@ -299,6 +443,7 @@ export class OrdenesService {
         o.convenio_id,
         o.estado,
         o.muestra_recepcionada,
+        o.condiciones_preanaliticas,
         o.fecha_registro,
         o.fecha_recepcion,
         o.tipo_paciente,
@@ -311,6 +456,7 @@ export class OrdenesService {
         p.dni as paciente_dni,
         p.nombres as paciente_nombres,
         CONCAT(p.apellido_paterno, ' ', p.apellido_materno) as paciente_apellidos,
+        p.telefono as paciente_telefono,
         s.nombre as sede_nombre,
         tc.nombre as tipo_cliente_nombre,
         c.nombre_empresa as convenio_nombre,
@@ -325,8 +471,8 @@ export class OrdenesService {
       LEFT JOIN orden_analisis oa ON o.id = oa.orden_id
       LEFT JOIN usuarios urec ON o.usuario_recepcion_id = urec.id
       WHERE ${conditions.join(' AND ')}
-      GROUP BY o.id, o.muestra_recepcionada, o.medico, o.tipo_paciente, o.fecha_recepcion, o.usuario_recepcion_id, 
-               p.dni, p.nombres, p.apellido_paterno, p.apellido_materno, s.nombre, tc.nombre, c.nombre_empresa,
+      GROUP BY o.id, o.muestra_recepcionada, o.condiciones_preanaliticas, o.medico, o.tipo_paciente, o.fecha_recepcion, o.usuario_recepcion_id, 
+               p.dni, p.nombres, p.apellido_paterno, p.apellido_materno, p.telefono, s.nombre, tc.nombre, c.nombre_empresa,
                urec.nombres, urec.apellidos
       ORDER BY o.fecha_registro DESC
       LIMIT $${paramCount++} OFFSET $${paramCount++}`,
@@ -348,6 +494,7 @@ export class OrdenesService {
       total: parseFloat(row.total || 0),
       nota: row.nota,
       medico: row.medico,
+      condiciones_preanaliticas: row.condiciones_preanaliticas,
       usuario_registro_id: row.usuario_registro_id,
       usuario_recepcion_id: row.usuario_recepcion_id,
       created_at: row.created_at,
@@ -356,6 +503,7 @@ export class OrdenesService {
       paciente_dni: row.paciente_dni,
       paciente_nombres: row.paciente_nombres,
       paciente_apellidos: row.paciente_apellidos,
+      paciente_telefono: row.paciente_telefono || null,
       sede_nombre: row.sede_nombre,
       tipo_cliente_nombre: row.tipo_cliente_nombre,
       convenio_nombre: row.convenio_nombre,
@@ -371,44 +519,6 @@ export class OrdenesService {
       perPage: limit,
       totalPages: Math.ceil(total / limit),
     };
-  }
-
-  async updateOrden(id: number, data: UpdateOrdenInput): Promise<Orden> {
-    const fields: string[] = [];
-    const values: any[] = [];
-    let paramCount = 1;
-
-    if (data.sede_id !== undefined) {
-      fields.push(`sede_id = $${paramCount++}`);
-      values.push(data.sede_id);
-    }
-    if (data.tipo_cliente_id !== undefined) {
-      fields.push(`tipo_cliente_id = $${paramCount++}`);
-      values.push(data.tipo_cliente_id);
-    }
-    if (data.convenio_id !== undefined) {
-      fields.push(`convenio_id = $${paramCount++}`);
-      values.push(data.convenio_id);
-    }
-    if (data.nota !== undefined) {
-      fields.push(`nota = $${paramCount++}`);
-      values.push(data.nota);
-    }
-
-    if (fields.length === 0) {
-      const orden = await pool.query('SELECT * FROM ordenes WHERE id = $1', [id]);
-      return orden.rows[0];
-    }
-
-    fields.push('updated_at = CURRENT_TIMESTAMP');
-    values.push(id);
-
-    const result = await pool.query(
-      `UPDATE ordenes SET ${fields.join(', ')} WHERE id = $${paramCount} RETURNING *`,
-      values
-    );
-
-    return result.rows[0];
   }
 
   async updateEstadoOrden(
@@ -679,6 +789,79 @@ export class OrdenesService {
       [ordenId]
     );
     return result.rows[0] || null;
+  }
+
+  /**
+   * Helper privado para generar condiciones pre-analíticas con IA
+   */
+  private async generarCondicionesPreanaliticasIA(
+    ordenId: number,
+    paciente: { fecha_nacimiento?: string | Date; genero?: string },
+    analisisInput: { id: number }[]
+  ): Promise<string> {
+    try {
+      const analisisIds = analisisInput.map(a => a.id);
+      if (analisisIds.length === 0) return '';
+
+      const resAnalisis = await pool.query(
+        `SELECT nombre FROM analisis WHERE id = ANY($1::int[])`,
+        [analisisIds]
+      );
+
+      const analisisNombres = resAnalisis.rows.map((r: any) => r.nombre);
+
+      let edadPaciente = 0;
+      if (paciente.fecha_nacimiento) {
+        const fechaNac = new Date(paciente.fecha_nacimiento);
+        const hoy = new Date();
+        edadPaciente = hoy.getFullYear() - fechaNac.getFullYear();
+        const m = hoy.getMonth() - fechaNac.getMonth();
+        if (m < 0 || (m === 0 && hoy.getDate() < fechaNac.getDate())) {
+          edadPaciente--;
+        }
+      }
+
+      return await iaService.procesarCondicionesPreanaliticas(ordenId, {
+        paciente_genero: paciente.genero || 'M',
+        paciente_edad: edadPaciente > 0 ? edadPaciente : 30,
+        analisis_nombres: analisisNombres,
+      });
+    } catch (error) {
+      console.error(`Error en generarCondicionesPreanaliticasIA para orden ${ordenId}:`, error);
+      return '';
+    }
+  }
+
+  /**
+   * Obtiene las condiciones pre-analíticas de la orden, o las genera con IA si aún no existen
+   */
+  async obtenerOCrearPreanalitica(ordenId: number): Promise<string> {
+    const ordenRes = await pool.query(
+      `SELECT o.condiciones_preanaliticas, p.fecha_nacimiento, p.genero
+       FROM ordenes o 
+       INNER JOIN pacientes p ON o.paciente_id = p.id 
+       WHERE o.id = $1`,
+      [ordenId]
+    );
+
+    if (ordenRes.rows.length === 0) {
+      throw new Error('La orden no existe');
+    }
+
+    const row = ordenRes.rows[0];
+    if (row.condiciones_preanaliticas) {
+      return row.condiciones_preanaliticas;
+    }
+
+    // Obtener análisis de la orden
+    const analisisRes = await pool.query(
+      `SELECT analisis_id FROM orden_analisis WHERE orden_id = $1`,
+      [ordenId]
+    );
+
+    const analisisInput = analisisRes.rows.map((r: any) => ({ id: r.analisis_id }));
+
+    return await this.generarCondicionesPreanaliticasIA(ordenId, row, analisisInput);
   }
 }
 

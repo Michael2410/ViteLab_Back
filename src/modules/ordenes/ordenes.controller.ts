@@ -238,6 +238,17 @@ export class OrdenesController {
       errorResponse(res, 'Error al marcar orden como impresa', error);
     }
   }
+
+  // Obtener o generar condiciones pre-analíticas con IA
+  async getPreanalitica(req: Request, res: Response): Promise<void> {
+    try {
+      const id = parseInt(req.params.id);
+      const preanalitica = await ordenesService.obtenerOCrearPreanalitica(id);
+      successResponse(res, { condiciones_preanaliticas: preanalitica }, 'Condiciones pre-analíticas obtenidas exitosamente');
+    } catch (error: any) {
+      errorResponse(res, error.message || 'Error al obtener condiciones pre-analíticas', error);
+    }
+  }
 }
 
 export const ordenesController = new OrdenesController();

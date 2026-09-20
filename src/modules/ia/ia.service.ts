@@ -195,7 +195,120 @@ Finaliza siempre con la frase exacta: "Estos resultados son datos técnicos que 
       // No lanzamos el error para que no afecte el flujo principal
     }
   }
+
+  /**
+   * Genera las condiciones e indicaciones pre-analíticas según exámenes, sexo y edad del paciente
+   */
+  async generarCondicionesPreanaliticas(data: PreanaliticaDatosInput, reintentos = 3): Promise<string> {
+    if (!this.genAI) {
+      throw new Error('Servicio de IA no disponible. Configure GEMINI_API_KEY.');
+    }
+
+    const modelos = [
+      'gemini-1.5-flash',
+      'gemini-2.0-flash',
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite'
+    ];
+
+    const sexoTexto = data.paciente_genero === 'M' ? 'Masculino' : 'Femenino';
+    const esPediatrico = data.paciente_edad < 12;
+    const esLactante = data.paciente_edad <= 2;
+
+    const prompt = `
+ROL:
+Actúa como un Especialista en Medicina de Laboratorio Clínico y Fase Pre-Analítica. Tu función es consolidar de forma clara, profesional y rigurosa las indicaciones preparatorias para el paciente antes de la toma de muestra.
+
+DATOS DEL PACIENTE:
+- Sexo: ${sexoTexto}
+- Edad: ${data.paciente_edad} años ${esPediatrico ? '(Paciente Pediátrico)' : esLactante ? '(Lactante)' : ''}
+
+EXÁMENES SOLICITADOS:
+${data.analisis_nombres.map(a => `- ${a}`).join('\n')}
+
+REGLAS DE GENERACIÓN CLÍNICA:
+1. ADAPTACIÓN POR EDAD:
+   - Si el paciente es lactante (<=2 años) o pediátrico (<12 años), ajusta el ayuno según guías pediátricas (2-4 horas en lactantes, 4-6 horas en niños pequeños) para prevenir deshidratación e hipoglucemia.
+   - Si es adulto, el ayuno estándar para glucosa/lípidos es de 8 a 12 horas (máximo 14 horas).
+2. ADAPTACIÓN POR SEXO Y EXAMEN:
+   - Para exámenes masculinos específicos (ej. PSA, Antígeno Prostático): incluir abstención sexual, andar en bicicleta o manipulación prostática por 48h antes.
+   - Para muestras de orina femeninas: indicar aseo genital de adelante hacia atrás con agua y jabón neutro, y evitar recolección durante la menstruación a menos que el médico lo indique.
+3. FORMATO Y ESTILO:
+   - Organiza la respuesta en viñetas claras con emojis representativos (⏱️ Ayuno, 🧪 Muestra de Orina/Heces, 🍷 Dieta/Hábitos, 💊 Medicamentos, ⚠️ Indicaciones Especiales).
+   - Usa un tono claro, empático y estructurado para entregar al paciente en recepción o ticket.
+   - Sé conciso y directo (máximo 140 palabras).
+`.trim();
+
+    let lastError: any = null;
+
+    for (const modelName of modelos) {
+      try {
+        console.log(`🤖 Generando condiciones pre-analíticas con modelo: ${modelName}`);
+        const model = this.genAI.getGenerativeModel({ model: modelName });
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const texto = response.text();
+
+        console.log(`✅ Condiciones pre-analíticas generadas con ${modelName}`);
+        return this.limpiarTexto(texto);
+      } catch (error: any) {
+        console.error(`❌ Error al generar condiciones pre-analíticas con ${modelName}:`, error?.message || error);
+        lastError = error;
+
+        if (error?.status === 404) continue;
+
+        if (error?.status === 429 && reintentos > 0) {
+          console.log(`⏳ Cuota excedida. Reintentando en 60 segundos... (${reintentos} intentos restantes)`);
+          await this.sleep(60000);
+          return this.generarCondicionesPreanaliticas(data, reintentos - 1);
+        }
+
+        continue;
+      }
+    }
+
+    console.error('❌ Ningún modelo de Gemini disponible para pre-analítica:', lastError);
+    throw new Error('No se pudo generar las condiciones pre-analíticas. Ningún modelo disponible.');
+  }
+
+  /**
+   * Guarda las condiciones pre-analíticas en la base de datos
+   */
+  async guardarCondicionesPreanaliticas(ordenId: number, condiciones: string): Promise<void> {
+    try {
+      await pool.query(
+        `UPDATE ordenes SET condiciones_preanaliticas = $1, updated_at = NOW() WHERE id = $2`,
+        [condiciones, ordenId]
+      );
+      console.log(`✅ Condiciones pre-analíticas IA guardadas para orden ${ordenId}`);
+    } catch (error) {
+      console.error(`Error al guardar condiciones pre-analíticas para orden ${ordenId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Genera y guarda las condiciones pre-analíticas para una orden
+   */
+  async procesarCondicionesPreanaliticas(ordenId: number, data: PreanaliticaDatosInput): Promise<string> {
+    try {
+      console.log(`🤖 Generando condiciones pre-analíticas IA para orden ${ordenId}...`);
+      const condiciones = await this.generarCondicionesPreanaliticas(data);
+      await this.guardarCondicionesPreanaliticas(ordenId, condiciones);
+      return condiciones;
+    } catch (error) {
+      console.error(`Error en procesarCondicionesPreanaliticas para orden ${ordenId}:`, error);
+      return '';
+    }
+  }
+}
+
+export interface PreanaliticaDatosInput {
+  paciente_genero: string;
+  paciente_edad: number;
+  analisis_nombres: string[];
 }
 
 export const iaService = new IAService();
 export type { OrdenParaIA, AnalisisParaIA, ResultadoParaIA };
+

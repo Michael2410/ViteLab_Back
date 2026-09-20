@@ -68,6 +68,7 @@ export interface Orden {
   fecha_aprobacion?: Date;
   nota?: string;
   total?: number;
+  condiciones_preanaliticas?: string | null;
   usuario_registro_id: number;
   usuario_aprobacion_id?: number;
   created_at: Date;
@@ -90,15 +91,22 @@ export interface CreateOrdenInput {
   analisis: Array<{
     id: number;
     muestras_ids?: number[];
+    precio?: number;
   }>;
   nota?: string;
 }
 
 export interface UpdateOrdenInput {
+  paciente?: CreatePacienteInput;
   sede_id?: number;
   tipo_cliente_id?: number;
   convenio_id?: number;
   medico?: string;
+  analisis?: Array<{
+    id: number;
+    muestras_ids?: number[];
+    precio?: number;
+  }>;
   nota?: string;
 }
 

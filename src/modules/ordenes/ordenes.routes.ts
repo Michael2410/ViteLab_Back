@@ -436,4 +436,29 @@ router.patch(
   ordenesController.marcarComoImpreso.bind(ordenesController)
 );
 
+/**
+ * @swagger
+ * /api/ordenes/{id}/preanalitica:
+ *   get:
+ *     summary: Obtener o generar condiciones pre-analíticas con IA
+ *     tags: [Ordenes]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Condiciones pre-analíticas obtenidas exitosamente
+match
+ */
+router.get(
+  '/:id/preanalitica',
+  validate(getOrdenByIdSchema),
+  ordenesController.getPreanalitica.bind(ordenesController)
+);
+
 export default router;

@@ -5,7 +5,6 @@
 
 import makeWASocket, {
   DisconnectReason,
-  useMultiFileAuthState,
   makeCacheableSignalKeyStore,
   WASocket,
   ConnectionState,
@@ -17,6 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import pool from '../../config/database';
 import pino from 'pino';
+import { useBaileysAuthStateDB } from './whatsapp.auth';
 
 // Logger silencioso para Baileys
 const logger = pino({ level: 'silent' });
@@ -67,13 +67,8 @@ class WhatsAppService {
       // Desconectar sesión anterior si existe
       await this.cleanupSession();
 
-      // Crear directorio de auth si no existe
-      if (!fs.existsSync(AUTH_DIR)) {
-        fs.mkdirSync(AUTH_DIR, { recursive: true });
-      }
-
-      // Obtener estado de autenticación
-      const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+      // Obtener estado de autenticación desde PostgreSQL
+      const { state, saveCreds } = await useBaileysAuthStateDB();
 
       // Obtener última versión de Baileys
       const { version } = await fetchLatestBaileysVersion();
@@ -170,10 +165,17 @@ class WhatsAppService {
   }
 
   async tryReconnect(): Promise<void> {
-    // Verificar si hay credenciales guardadas
-    const credsPath = path.join(AUTH_DIR, 'creds.json');
-    if (!fs.existsSync(credsPath)) {
-      console.log('ℹ️ No hay credenciales guardadas para reconectar');
+    // Verificar si hay credenciales en BD
+    try {
+      const result = await pool.query(
+        "SELECT 1 FROM whatsapp_sessions WHERE session_id = 'default' AND data_key = 'creds' LIMIT 1"
+      );
+      if (result.rows.length === 0) {
+        console.log('ℹ️ No hay credenciales en BD para reconectar');
+        return;
+      }
+    } catch {
+      console.log('ℹ️ No se pudo verificar credenciales en BD');
       return;
     }
 
@@ -190,6 +192,7 @@ class WhatsAppService {
       console.log('⚠️ Error al reconectar:', error);
     }
   }
+
 
   private async cleanupSession(): Promise<void> {
     if (this.socket) {
@@ -214,8 +217,11 @@ class WhatsAppService {
       } catch (e) {
         // Ignorar
       }
-      this.socket.end(undefined);
-      this.socket = null;
+      // El socket puede quedar null si logout() disparó connection.update
+      if (this.socket) {
+        this.socket.end(undefined);
+        this.socket = null;
+      }
     }
 
     await this.clearCredentials();
@@ -223,25 +229,15 @@ class WhatsAppService {
   }
 
   private async clearCredentials(): Promise<void> {
-    // Limpiar archivos locales
-    if (fs.existsSync(AUTH_DIR)) {
-      try {
-        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-        console.log('🗑️ Credenciales locales eliminadas');
-      } catch (e) {
-        console.error('Error al eliminar credenciales locales:', e);
-      }
-    }
-
-    // Limpiar BD
+    // Limpiar auth state y estado de conexión en BD
     try {
-      await pool.query('DELETE FROM whatsapp_credentials');
+      await pool.query("DELETE FROM whatsapp_sessions WHERE session_id = 'default'");
       await pool.query(`
-        UPDATE whatsapp_sessions 
-        SET is_connected = false, disconnected_at = NOW() 
+        UPDATE whatsapp_connection_status 
+        SET is_connected = false, last_disconnected_at = NOW(), updated_at = NOW()
         WHERE is_connected = true
       `);
-      console.log('🗑️ Credenciales de BD eliminadas');
+      console.log('🗑️ Credenciales eliminadas de BD');
     } catch (e) {
       console.error('Error al limpiar BD:', e);
     }
@@ -254,11 +250,18 @@ class WhatsAppService {
     try {
       if (isConnected && this.phoneNumber) {
         await pool.query(`
-          INSERT INTO whatsapp_sessions (phone_number, is_connected, connected_at)
-          VALUES ($1, true, NOW())
-          ON CONFLICT (phone_number) 
-          DO UPDATE SET is_connected = true, connected_at = NOW(), disconnected_at = NULL
+          INSERT INTO whatsapp_connection_status (session_id, is_connected, phone_number, last_connected_at)
+          VALUES ('default', true, $1, NOW())
+          ON CONFLICT (session_id)
+          DO UPDATE SET is_connected = true, phone_number = $1, last_connected_at = NOW(), last_disconnected_at = NULL, updated_at = NOW()
         `, [this.phoneNumber]);
+      } else {
+        await pool.query(`
+          INSERT INTO whatsapp_connection_status (session_id, is_connected, last_disconnected_at)
+          VALUES ('default', false, NOW())
+          ON CONFLICT (session_id)
+          DO UPDATE SET is_connected = false, last_disconnected_at = NOW(), updated_at = NOW()
+        `);
       }
     } catch (e) {
       console.error('Error al guardar estado de conexión:', e);

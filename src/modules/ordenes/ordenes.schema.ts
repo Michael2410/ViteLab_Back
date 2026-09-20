@@ -23,6 +23,7 @@ export const createOrdenSchema = z.object({
     analisis: z.array(z.object({
       id: z.number().int().positive(),
       muestras_ids: z.array(z.number().int().positive()).optional(),
+      precio: z.number().min(0).optional(),
     })).min(1, 'Debe seleccionar al menos un análisis'),
     nota: z.string().max(500).optional(),
     medico: z.string().max(255).optional(),
@@ -34,10 +35,18 @@ export const updateOrdenSchema = z.object({
     id: z.string().regex(/^\d+$/, 'ID debe ser un número'),
   }),
   body: z.object({
+    paciente: createPacienteSchema.optional(),
     sede_id: z.number().int().positive().optional(),
     tipo_cliente_id: z.number().int().positive().optional(),
-    convenio_id: z.number().int().positive().optional(),
-    observaciones: z.string().max(500).optional(),
+    convenio_id: z.number().int().positive().optional().nullable(),
+    analisis: z.array(z.object({
+      id: z.number().int().positive(),
+      muestras_ids: z.array(z.number().int().positive()).optional(),
+      precio: z.number().min(0).optional(),
+    })).optional(),
+    medico: z.string().max(255).optional().nullable(),
+    nota: z.string().max(500).optional().nullable(),
+    observaciones: z.string().max(500).optional().nullable(),
   }),
 });
 
