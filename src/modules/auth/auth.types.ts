@@ -7,18 +7,19 @@ export interface SedeAsignada {
 
 export interface Usuario {
   id: number;
+  personal_id: number | null;
   username: string;
   email: string;
-  nombres: string;
-  apellidos: string;
   rol_id: number;
-  firma_url: string | null;
   activo: boolean;
   created_at: Date;
   updated_at: Date;
 }
 
 export interface UsuarioConRol extends Usuario {
+  nombres: string;
+  apellidos: string;
+  firma_url: string | null;
   rol_nombre: string;
   rol_descripcion: string;
   sedes?: SedeAsignada[];
@@ -55,9 +56,10 @@ export interface CreateUserRequest {
   username: string;
   email: string;
   password: string;
-  nombres: string;
-  apellidos: string;
   rol_id: number;
+  personal_id?: number | null;
+  nombres?: string;
+  apellidos?: string;
   firma_url?: string;
   sede_ids?: number[];
 }
@@ -65,9 +67,10 @@ export interface CreateUserRequest {
 export interface UpdateUserRequest {
   email?: string;
   password?: string;
+  rol_id?: number;
+  personal_id?: number | null;
   nombres?: string;
   apellidos?: string;
-  rol_id?: number;
   firma_url?: string;
   activo?: boolean;
   sede_ids?: number[];

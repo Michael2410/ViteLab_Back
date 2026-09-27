@@ -1,4 +1,5 @@
-import pool from '../../config/database';
+import { eq, and, asc, count, sql } from 'drizzle-orm';
+import { db, roles, permisos, rolesPermisos, usuarios } from '../../db';
 import {
   Rol,
   Permiso,
@@ -17,254 +18,229 @@ export class RolesService {
    * Obtener todos los roles con conteo de usuarios
    */
   async getAll(): Promise<RolConPermisos[]> {
-    const query = `
-      SELECT 
-        r.id, r.nombre, r.descripcion, r.activo, r.created_at, r.updated_at,
-        COALESCE(
-          (SELECT COUNT(*) FROM usuarios WHERE rol_id = r.id AND activo = true),
-          0
-        )::int as total_usuarios,
-        COALESCE(
-          (SELECT array_agg(p.codigo) 
-           FROM roles_permisos rp 
-           INNER JOIN permisos p ON rp.permiso_id = p.id 
-           WHERE rp.rol_id = r.id),
-          '{}'
-        ) as permisos
-      FROM roles r
-      ORDER BY r.id ASC
-    `;
+    const allRoles = await db
+      .select()
+      .from(roles)
+      .orderBy(asc(roles.id));
 
-    const result = await pool.query(query);
-    return result.rows;
+    // Conteo de usuarios por rol
+    const userCounts = await db
+      .select({ rol_id: usuarios.rol_id, count: count() })
+      .from(usuarios)
+      .where(eq(usuarios.activo, true))
+      .groupBy(usuarios.rol_id);
+
+    const userCountMap = new Map<number, number>();
+    userCounts.forEach((u) => {
+      if (u.rol_id !== null) {
+        userCountMap.set(u.rol_id, Number(u.count));
+      }
+    });
+
+    // Permisos por rol
+    const rolesWithPerms = await db
+      .select({
+        rol_id: rolesPermisos.rol_id,
+        codigo: permisos.codigo,
+      })
+      .from(rolesPermisos)
+      .innerJoin(permisos, eq(rolesPermisos.permiso_id, permisos.id));
+
+    const permsMap = new Map<number, string[]>();
+    rolesWithPerms.forEach((rp) => {
+      if (!permsMap.has(rp.rol_id)) permsMap.set(rp.rol_id, []);
+      permsMap.get(rp.rol_id)!.push(rp.codigo);
+    });
+
+    return allRoles.map((r) => ({
+      ...r,
+      total_usuarios: userCountMap.get(r.id) || 0,
+      permisos: permsMap.get(r.id) || [],
+    }));
   }
 
   /**
    * Obtener roles activos (para selects)
    */
   async getActive(): Promise<Rol[]> {
-    const query = `
-      SELECT id, nombre, descripcion, activo, created_at, updated_at
-      FROM roles
-      WHERE activo = true
-      ORDER BY nombre ASC
-    `;
-
-    const result = await pool.query(query);
-    return result.rows;
+    return db
+      .select()
+      .from(roles)
+      .where(eq(roles.activo, true))
+      .orderBy(asc(roles.nombre));
   }
 
   /**
    * Obtener rol por ID con permisos
    */
   async getById(id: number): Promise<RolConPermisos> {
-    const query = `
-      SELECT 
-        r.id, r.nombre, r.descripcion, r.activo, r.created_at, r.updated_at,
-        COALESCE(
-          (SELECT COUNT(*) FROM usuarios WHERE rol_id = r.id AND activo = true),
-          0
-        )::int as total_usuarios,
-        COALESCE(
-          (SELECT array_agg(p.codigo) 
-           FROM roles_permisos rp 
-           INNER JOIN permisos p ON rp.permiso_id = p.id 
-           WHERE rp.rol_id = r.id),
-          '{}'
-        ) as permisos
-      FROM roles r
-      WHERE r.id = $1
-    `;
+    const [rol] = await db
+      .select()
+      .from(roles)
+      .where(eq(roles.id, id));
 
-    const result = await pool.query(query, [id]);
-
-    if (result.rows.length === 0) {
+    if (!rol) {
       throw new Error('Rol no encontrado');
     }
 
-    return result.rows[0];
+    const [userCount] = await db
+      .select({ count: count() })
+      .from(usuarios)
+      .where(and(eq(usuarios.rol_id, id), eq(usuarios.activo, true)));
+
+    const perms = await db
+      .select({ codigo: permisos.codigo })
+      .from(rolesPermisos)
+      .innerJoin(permisos, eq(rolesPermisos.permiso_id, permisos.id))
+      .where(eq(rolesPermisos.rol_id, id));
+
+    return {
+      ...rol,
+      total_usuarios: Number(userCount?.count || 0),
+      permisos: perms.map((p) => p.codigo),
+    };
   }
 
   /**
    * Crear nuevo rol
    */
   async create(data: CreateRolRequest): Promise<RolConPermisos> {
-    const client = await pool.connect();
-
-    try {
-      await client.query('BEGIN');
-
+    const newRolId = await db.transaction(async (tx) => {
       // Verificar que el nombre no exista
-      const checkQuery = 'SELECT id FROM roles WHERE LOWER(nombre) = LOWER($1)';
-      const checkResult = await client.query(checkQuery, [data.nombre]);
+      const checkResult = await tx
+        .select({ id: roles.id })
+        .from(roles)
+        .where(sql`LOWER(${roles.nombre}) = LOWER(${data.nombre})`);
 
-      if (checkResult.rows.length > 0) {
+      if (checkResult.length > 0) {
         throw new Error('Ya existe un rol con ese nombre');
       }
 
       // Crear el rol
-      const insertQuery = `
-        INSERT INTO roles (nombre, descripcion, activo)
-        VALUES ($1, $2, true)
-        RETURNING id, nombre, descripcion, activo, created_at, updated_at
-      `;
-
-      const result = await client.query(insertQuery, [
-        data.nombre,
-        data.descripcion || null,
-      ]);
-
-      const newRol = result.rows[0];
+      const [newRol] = await tx
+        .insert(roles)
+        .values({
+          nombre: data.nombre,
+          descripcion: data.descripcion || null,
+          activo: true,
+        })
+        .returning();
 
       // Asignar permisos
       if (data.permisos && data.permisos.length > 0) {
-        const permisosValues = data.permisos
-          .map((_, index) => `($1, $${index + 2})`)
-          .join(', ');
-
-        const permisosQuery = `
-          INSERT INTO roles_permisos (rol_id, permiso_id)
-          VALUES ${permisosValues}
-          ON CONFLICT (rol_id, permiso_id) DO NOTHING
-        `;
-
-        await client.query(permisosQuery, [newRol.id, ...data.permisos]);
+        await tx
+          .insert(rolesPermisos)
+          .values(
+            data.permisos.map((permiso_id) => ({
+              rol_id: newRol.id,
+              permiso_id,
+            }))
+          )
+          .onConflictDoNothing();
       }
 
-      await client.query('COMMIT');
+      return newRol.id;
+    });
 
-      // Obtener el rol con permisos
-      return this.getById(newRol.id);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    return this.getById(newRolId);
   }
 
   /**
    * Actualizar rol
    */
   async update(id: number, data: UpdateRolRequest): Promise<RolConPermisos> {
-    const client = await pool.connect();
-
-    try {
-      await client.query('BEGIN');
-
+    await db.transaction(async (tx) => {
       // Verificar que el rol exista
-      const checkQuery = 'SELECT id, nombre FROM roles WHERE id = $1';
-      const checkResult = await client.query(checkQuery, [id]);
+      const [existing] = await tx
+        .select({ id: roles.id, nombre: roles.nombre })
+        .from(roles)
+        .where(eq(roles.id, id));
 
-      if (checkResult.rows.length === 0) {
+      if (!existing) {
         throw new Error('Rol no encontrado');
       }
 
-      // Verificar que el nombre no exista (si se está cambiando)
-      if (data.nombre && data.nombre !== checkResult.rows[0].nombre) {
-        const nameCheckQuery = 'SELECT id FROM roles WHERE LOWER(nombre) = LOWER($1) AND id != $2';
-        const nameCheckResult = await client.query(nameCheckQuery, [data.nombre, id]);
+      // Verificar nombre duplicado
+      if (data.nombre && data.nombre.toLowerCase() !== existing.nombre.toLowerCase()) {
+        const checkResult = await tx
+          .select({ id: roles.id })
+          .from(roles)
+          .where(
+            and(
+              sql`LOWER(${roles.nombre}) = LOWER(${data.nombre})`,
+              sql`${roles.id} != ${id}`
+            )
+          );
 
-        if (nameCheckResult.rows.length > 0) {
+        if (checkResult.length > 0) {
           throw new Error('Ya existe un rol con ese nombre');
         }
       }
 
-      // Construir query de actualización
-      const fields: string[] = [];
-      const values: any[] = [];
-      let paramIndex = 1;
+      // Construir actualización
+      const updateData: Partial<typeof roles.$inferInsert> = {
+        updated_at: sql`CURRENT_TIMESTAMP` as any,
+      };
+      if (data.nombre !== undefined) updateData.nombre = data.nombre;
+      if (data.descripcion !== undefined) updateData.descripcion = data.descripcion;
+      if (data.activo !== undefined) updateData.activo = data.activo;
 
-      if (data.nombre !== undefined) {
-        fields.push(`nombre = $${paramIndex++}`);
-        values.push(data.nombre);
-      }
+      await tx
+        .update(roles)
+        .set(updateData)
+        .where(eq(roles.id, id));
 
-      if (data.descripcion !== undefined) {
-        fields.push(`descripcion = $${paramIndex++}`);
-        values.push(data.descripcion);
-      }
-
-      if (data.activo !== undefined) {
-        fields.push(`activo = $${paramIndex++}`);
-        values.push(data.activo);
-      }
-
-      if (fields.length > 0) {
-        values.push(id);
-        const updateQuery = `
-          UPDATE roles
-          SET ${fields.join(', ')}
-          WHERE id = $${paramIndex}
-        `;
-
-        await client.query(updateQuery, values);
-      }
-
-      // Actualizar permisos si se proporcionaron
+      // Actualizar permisos si fueron enviados
       if (data.permisos !== undefined) {
-        // Eliminar permisos actuales
-        await client.query('DELETE FROM roles_permisos WHERE rol_id = $1', [id]);
+        await tx.delete(rolesPermisos).where(eq(rolesPermisos.rol_id, id));
 
-        // Insertar nuevos permisos
         if (data.permisos.length > 0) {
-          const permisosValues = data.permisos
-            .map((_, index) => `($1, $${index + 2})`)
-            .join(', ');
-
-          const permisosQuery = `
-            INSERT INTO roles_permisos (rol_id, permiso_id)
-            VALUES ${permisosValues}
-            ON CONFLICT (rol_id, permiso_id) DO NOTHING
-          `;
-
-          await client.query(permisosQuery, [id, ...data.permisos]);
+          await tx
+            .insert(rolesPermisos)
+            .values(
+              data.permisos.map((permiso_id) => ({
+                rol_id: id,
+                permiso_id,
+              }))
+            )
+            .onConflictDoNothing();
         }
       }
+    });
 
-      await client.query('COMMIT');
-
-      // Obtener el rol actualizado con permisos
-      return this.getById(id);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    return this.getById(id);
   }
 
   /**
    * Eliminar rol (verificar que no tenga usuarios)
    */
   async delete(id: number): Promise<void> {
-    // Verificar que el rol no sea uno de los predeterminados
-    const rolQuery = await pool.query('SELECT nombre FROM roles WHERE id = $1', [id]);
+    const [rol] = await db
+      .select({ nombre: roles.nombre })
+      .from(roles)
+      .where(eq(roles.id, id));
 
-    if (rolQuery.rows.length === 0) {
+    if (!rol) {
       throw new Error('Rol no encontrado');
     }
 
-    const rolNombre = rolQuery.rows[0].nombre;
-    if (['SUPER_ADMIN', 'ADMIN'].includes(rolNombre)) {
+    if (['SUPER_ADMIN', 'ADMIN'].includes(rol.nombre)) {
       throw new Error('No se pueden eliminar roles predeterminados del sistema');
     }
 
-    // Verificar que no tenga usuarios asignados
-    const usersQuery = await pool.query(
-      'SELECT COUNT(*) as total FROM usuarios WHERE rol_id = $1 AND activo = true',
-      [id]
-    );
+    const [userCount] = await db
+      .select({ count: count() })
+      .from(usuarios)
+      .where(and(eq(usuarios.rol_id, id), eq(usuarios.activo, true)));
 
-    if (parseInt(usersQuery.rows[0].total) > 0) {
+    if (Number(userCount?.count || 0) > 0) {
       throw new Error('No se puede eliminar el rol porque tiene usuarios asignados');
     }
 
-    // Eliminar permisos del rol
-    await pool.query('DELETE FROM roles_permisos WHERE rol_id = $1', [id]);
-
-    // Eliminar rol
-    await pool.query('DELETE FROM roles WHERE id = $1', [id]);
+    await db.transaction(async (tx) => {
+      await tx.delete(rolesPermisos).where(eq(rolesPermisos.rol_id, id));
+      await tx.delete(roles).where(eq(roles.id, id));
+    });
   }
 
   // ============================================
@@ -275,26 +251,22 @@ export class RolesService {
    * Obtener todos los permisos
    */
   async getAllPermisos(): Promise<Permiso[]> {
-    const query = `
-      SELECT id, modulo, submodulo, accion, codigo, descripcion, created_at
-      FROM permisos
-      ORDER BY modulo, submodulo NULLS FIRST, accion
-    `;
-
-    const result = await pool.query(query);
-    return result.rows;
+    return db
+      .select()
+      .from(permisos)
+      .orderBy(asc(permisos.modulo), asc(permisos.submodulo), asc(permisos.accion));
   }
 
   /**
    * Obtener permisos agrupados por módulo/submódulo
    */
   async getPermisosAgrupados(): Promise<PermisoAgrupado[]> {
-    const permisos = await this.getAllPermisos();
+    const allPermisos = await this.getAllPermisos();
 
     // Agrupar por módulo
     const modulosMap = new Map<string, Map<string | null, Permiso[]>>();
 
-    permisos.forEach((permiso) => {
+    allPermisos.forEach((permiso) => {
       if (!modulosMap.has(permiso.modulo)) {
         modulosMap.set(permiso.modulo, new Map());
       }
@@ -315,8 +287,8 @@ export class RolesService {
     modulosMap.forEach((submodulosMap, modulo) => {
       const submodulos: { nombre: string | null; permisos: Permiso[] }[] = [];
 
-      submodulosMap.forEach((permisos, submodulo) => {
-        submodulos.push({ nombre: submodulo, permisos });
+      submodulosMap.forEach((pList, submodulo) => {
+        submodulos.push({ nombre: submodulo, permisos: pList });
       });
 
       result.push({ modulo, submodulos });
@@ -329,14 +301,12 @@ export class RolesService {
    * Obtener permisos de un rol
    */
   async getPermisosByRol(rolId: number): Promise<number[]> {
-    const query = `
-      SELECT permiso_id
-      FROM roles_permisos
-      WHERE rol_id = $1
-    `;
+    const rows = await db
+      .select({ permiso_id: rolesPermisos.permiso_id })
+      .from(rolesPermisos)
+      .where(eq(rolesPermisos.rol_id, rolId));
 
-    const result = await pool.query(query, [rolId]);
-    return result.rows.map((row) => row.permiso_id);
+    return rows.map((row) => row.permiso_id);
   }
 }
 

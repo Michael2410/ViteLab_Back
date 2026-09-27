@@ -8,22 +8,25 @@ import { errorHandler } from './utils/response.utils';
 
 // Importar rutas de módulos
 import authRoutes from './modules/auth/auth.routes';
-import areasRoutes from './modules/areas/areas.routes';
-import metodosRoutes from './modules/metodos/metodos.routes';
 import sedesRoutes from './modules/sedes/sedes.routes';
-import tiposClienteRoutes from './modules/tipos-cliente/tipos-cliente.routes';
-import analisisRoutes from './modules/analisis/analisis.routes';
-import componentesRoutes from './modules/componentes/componentes.routes';
-import tarifariosRoutes from './modules/tarifarios/tarifarios.routes';
-import conveniosRoutes from './modules/convenios/convenios.routes';
-import ordenesRoutes from './modules/ordenes/ordenes.routes';
-import resultadosRoutes from './modules/resultados/resultados.routes';
-import muestrasRoutes from './modules/muestras/muestras.routes';
 import uploadsRoutes from './modules/uploads/uploads.routes';
 import sistemaRoutes from './modules/sistema/sistema.routes';
-import reportesRoutes from './modules/reportes/reportes.routes';
 import rolesRoutes from './modules/roles/roles.routes';
-import whatsappRoutes from './modules/whatsapp/whatsapp.routes';
+import personalRoutes from './modules/personal';
+import {
+  areasRoutes,
+  metodosRoutes,
+  tiposClienteRoutes,
+  analisisRoutes,
+  componentesRoutes,
+  tarifariosRoutes,
+  conveniosRoutes,
+  muestrasRoutes,
+  ordenesRoutes,
+  resultadosRoutes,
+  reportesRoutes,
+  whatsappRoutes,
+} from './modules/laboratorio';
 
 dotenv.config();
 
@@ -148,6 +151,9 @@ app.use('/api/roles', rolesRoutes);
 
 // Módulo de WhatsApp
 app.use('/api/whatsapp', whatsappRoutes);
+
+// Módulo de Personal (RRHH)
+app.use('/api/personal', personalRoutes);
 
 // ============================================
 // ERROR HANDLING

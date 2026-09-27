@@ -1,4 +1,5 @@
-import pool from '../../config/database';
+import { eq, and, inArray, count, asc, sql } from 'drizzle-orm';
+import { db, configuracionSistema, sedes, ordenes } from '../../db';
 import type { ConfiguracionSistema, UpdateConfiguracionInput } from './sistema.types';
 
 class SistemaService {
@@ -7,120 +8,53 @@ class SistemaService {
    * Siempre retorna el primer (y único) registro
    */
   async getConfiguracion(): Promise<ConfiguracionSistema | null> {
-    const result = await pool.query(
-      `SELECT * FROM configuracion_sistema ORDER BY id LIMIT 1`
-    );
-    
-    if (result.rows.length === 0) {
+    const rows = await db
+      .select()
+      .from(configuracionSistema)
+      .orderBy(asc(configuracionSistema.id))
+      .limit(1);
+
+    if (rows.length === 0) {
       // Si no existe, crear un registro por defecto
-      const insert = await pool.query(
-        `INSERT INTO configuracion_sistema (empresa_nombre) 
-         VALUES ('LABORATORIO') 
-         RETURNING *`
-      );
-      return insert.rows[0];
+      const [insert] = await db
+        .insert(configuracionSistema)
+        .values({ empresa_nombre: 'LABORATORIO' })
+        .returning();
+      return insert;
     }
-    
-    return result.rows[0];
+
+    return rows[0];
   }
 
   /**
    * Actualizar la configuración del sistema
    */
   async updateConfiguracion(data: UpdateConfiguracionInput): Promise<ConfiguracionSistema> {
-    const fields: string[] = [];
-    const values: any[] = [];
-    let paramCount = 1;
-
-    if (data.empresa_nombre !== undefined) {
-      fields.push(`empresa_nombre = $${paramCount++}`);
-      values.push(data.empresa_nombre);
-    }
-    if (data.empresa_razon_social !== undefined) {
-      fields.push(`empresa_razon_social = $${paramCount++}`);
-      values.push(data.empresa_razon_social);
-    }
-    if (data.empresa_ruc !== undefined) {
-      fields.push(`empresa_ruc = $${paramCount++}`);
-      values.push(data.empresa_ruc);
-    }
-    if (data.empresa_direccion !== undefined) {
-      fields.push(`empresa_direccion = $${paramCount++}`);
-      values.push(data.empresa_direccion);
-    }
-    if (data.empresa_telefono !== undefined) {
-      fields.push(`empresa_telefono = $${paramCount++}`);
-      values.push(data.empresa_telefono);
-    }
-    if (data.empresa_email !== undefined) {
-      fields.push(`empresa_email = $${paramCount++}`);
-      values.push(data.empresa_email);
-    }
-    if (data.empresa_web !== undefined) {
-      fields.push(`empresa_web = $${paramCount++}`);
-      values.push(data.empresa_web);
-    }
-    if (data.logo_principal !== undefined) {
-      fields.push(`logo_principal = $${paramCount++}`);
-      values.push(data.logo_principal);
-    }
-    if (data.logo_secundario !== undefined) {
-      fields.push(`logo_secundario = $${paramCount++}`);
-      values.push(data.logo_secundario);
-    }
-    if (data.encabezado_reporte !== undefined) {
-      fields.push(`encabezado_reporte = $${paramCount++}`);
-      values.push(data.encabezado_reporte);
-    }
-    if (data.pie_reporte !== undefined) {
-      fields.push(`pie_reporte = $${paramCount++}`);
-      values.push(data.pie_reporte);
-    }
-    if (data.moneda !== undefined) {
-      fields.push(`moneda = $${paramCount++}`);
-      values.push(data.moneda);
-    }
-    if (data.igv_porcentaje !== undefined) {
-      fields.push(`igv_porcentaje = $${paramCount++}`);
-      values.push(data.igv_porcentaje);
-    }
-
-    if (fields.length === 0) {
-      const current = await this.getConfiguracion();
-      return current!;
-    }
-
-    fields.push('updated_at = CURRENT_TIMESTAMP');
-
-    // Obtener el ID del registro existente
-    const existingResult = await pool.query(
-      `SELECT id FROM configuracion_sistema ORDER BY id LIMIT 1`
-    );
-    
+    const existing = await this.getConfiguracion();
     let id: number;
-    if (existingResult.rows.length === 0) {
-      // Crear registro si no existe
-      const insert = await pool.query(
-        `INSERT INTO configuracion_sistema (empresa_nombre) 
-         VALUES ('LABORATORIO') 
-         RETURNING id`
-      );
-      id = insert.rows[0].id;
+
+    if (!existing) {
+      const [inserted] = await db
+        .insert(configuracionSistema)
+        .values({ empresa_nombre: 'LABORATORIO' })
+        .returning();
+      id = inserted.id;
     } else {
-      id = existingResult.rows[0].id;
+      id = existing.id;
     }
 
-    values.push(id);
+    const { id: _, created_at: __, ...updateData } = data as any;
 
-    const result = await pool.query(
-      `UPDATE configuracion_sistema 
-       SET ${fields.join(', ')} 
-       WHERE id = $${paramCount}
-       RETURNING *`,
-      values
-    );
+    const [updated] = await db
+      .update(configuracionSistema)
+      .set({
+        ...updateData,
+        updated_at: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(configuracionSistema.id, id))
+      .returning();
 
-    return result.rows[0];
+    return updated;
   }
 
   /**
@@ -143,65 +77,79 @@ class SistemaService {
       aprobadas: number;
     };
   }> {
-    // Colores para las sedes
     const colores = ['#1890ff', '#52c41a', '#faad14', '#722ed1', '#eb2f96', '#13c2c2', '#fa541c'];
-    
-    // Obtener todas las sedes activas (o filtradas por usuario)
-    let sedesQuery = `SELECT id, nombre FROM sedes WHERE activo = true`;
-    const sedesParams: any[] = [];
-    
+
+    // Obtener sedes activas (filtradas si corresponde)
+    const sedesConditions = [eq(sedes.activo, true)];
     if (sedeIds && sedeIds.length > 0) {
-      sedesParams.push(sedeIds);
-      sedesQuery += ` AND id = ANY($1::int[])`;
+      sedesConditions.push(inArray(sedes.id, sedeIds));
     }
-    
-    sedesQuery += ` ORDER BY nombre`;
-    
-    const sedesResult = await pool.query(sedesQuery, sedesParams);
-    
+
+    const sedesList = await db
+      .select({ id: sedes.id, nombre: sedes.nombre })
+      .from(sedes)
+      .where(and(...sedesConditions))
+      .orderBy(asc(sedes.nombre));
+
     // Para cada sede, obtener estadísticas
     const sedesStats = await Promise.all(
-      sedesResult.rows.map(async (sede, index) => {
+      sedesList.map(async (sede, index) => {
         // Órdenes de hoy
-        const hoyResult = await pool.query(
-          `SELECT COUNT(*) as count FROM ordenes 
-           WHERE sede_id = $1 AND DATE(fecha_registro) = CURRENT_DATE`,
-          [sede.id]
-        );
-        
+        const [hoyResult] = await db
+          .select({ count: count() })
+          .from(ordenes)
+          .where(
+            and(
+              eq(ordenes.sede_id, sede.id),
+              sql`DATE(${ordenes.fecha_registro}) = CURRENT_DATE`
+            )
+          );
+
         // Órdenes pendientes de resultados (MUESTRA_RECIBIDA)
-        const pendientesResult = await pool.query(
-          `SELECT COUNT(*) as count FROM ordenes 
-           WHERE sede_id = $1 AND estado = 'MUESTRA_RECIBIDA'`,
-          [sede.id]
-        );
-        
+        const [pendientesResult] = await db
+          .select({ count: count() })
+          .from(ordenes)
+          .where(
+            and(
+              eq(ordenes.sede_id, sede.id),
+              eq(ordenes.estado, 'MUESTRA_RECIBIDA')
+            )
+          );
+
         // Órdenes con resultados
-        const conResultadosResult = await pool.query(
-          `SELECT COUNT(*) as count FROM ordenes 
-           WHERE sede_id = $1 AND estado = 'CON_RESULTADOS'`,
-          [sede.id]
-        );
-        
+        const [conResultadosResult] = await db
+          .select({ count: count() })
+          .from(ordenes)
+          .where(
+            and(
+              eq(ordenes.sede_id, sede.id),
+              eq(ordenes.estado, 'CON_RESULTADOS')
+            )
+          );
+
         // Órdenes aprobadas listas para entrega
-        const aprobadasResult = await pool.query(
-          `SELECT COUNT(*) as count FROM ordenes 
-           WHERE sede_id = $1 AND estado = 'APROBADA'`,
-          [sede.id]
-        );
-        
+        const [aprobadasResult] = await db
+          .select({ count: count() })
+          .from(ordenes)
+          .where(
+            and(
+              eq(ordenes.sede_id, sede.id),
+              eq(ordenes.estado, 'APROBADA')
+            )
+          );
+
         return {
           id: sede.id,
           nombre: sede.nombre,
           color: colores[index % colores.length],
-          ordenes_hoy: parseInt(hoyResult.rows[0].count),
-          ordenes_pendientes: parseInt(pendientesResult.rows[0].count),
-          ordenes_con_resultados: parseInt(conResultadosResult.rows[0].count),
-          ordenes_aprobadas: parseInt(aprobadasResult.rows[0].count),
+          ordenes_hoy: Number(hoyResult?.count || 0),
+          ordenes_pendientes: Number(pendientesResult?.count || 0),
+          ordenes_con_resultados: Number(conResultadosResult?.count || 0),
+          ordenes_aprobadas: Number(aprobadasResult?.count || 0),
         };
       })
     );
-    
+
     // Calcular totales
     const totales = sedesStats.reduce(
       (acc, sede) => ({
@@ -212,7 +160,7 @@ class SistemaService {
       }),
       { ordenes_hoy: 0, pendientes_resultados: 0, con_resultados: 0, aprobadas: 0 }
     );
-    
+
     return { sedes: sedesStats, totales };
   }
 }

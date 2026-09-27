@@ -1,23 +1,8 @@
-// Tipos para el módulo de roles y permisos
+import type { InferSelectModel } from 'drizzle-orm';
+import { roles, permisos } from '../../db';
 
-export interface Rol {
-  id: number;
-  nombre: string;
-  descripcion: string | null;
-  activo: boolean;
-  created_at: Date;
-  updated_at: Date;
-}
-
-export interface Permiso {
-  id: number;
-  modulo: string;
-  submodulo: string | null;
-  accion: string;
-  codigo: string;
-  descripcion: string | null;
-  created_at: Date;
-}
+export type Rol = InferSelectModel<typeof roles>;
+export type Permiso = InferSelectModel<typeof permisos>;
 
 export interface PermisoAgrupado {
   modulo: string;

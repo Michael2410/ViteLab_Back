@@ -1,6 +1,16 @@
-import pool from '../../config/database';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import { eq, and, or, asc, desc, sql } from 'drizzle-orm';
+import {
+  db,
+  usuarios,
+  roles,
+  personal,
+  rolesPermisos,
+  permisos,
+  usuariosSedes,
+  sedes,
+} from '../../db';
 import {
   Usuario,
   UsuarioConRol,
@@ -23,34 +33,44 @@ export class AuthService {
   async login(credentials: LoginCredentials): Promise<LoginResponse> {
     const { username, password } = credentials;
 
-    // Buscar usuario con rol
-    const query = `
-      SELECT u.*, r.nombre as rol_nombre, r.descripcion as rol_descripcion
-      FROM usuarios u
-      INNER JOIN roles r ON u.rol_id = r.id
-      WHERE u.username = $1 AND u.activo = true
-    `;
+    // Buscar usuario con rol y personal
+    const [user] = await db
+      .select({
+        id: usuarios.id,
+        username: usuarios.username,
+        email: usuarios.email,
+        password_hash: usuarios.password_hash,
+        rol_id: usuarios.rol_id,
+        personal_id: usuarios.personal_id,
+        activo: usuarios.activo,
+        refresh_token: usuarios.refresh_token,
+        refresh_token_expires_at: usuarios.refresh_token_expires_at,
+        created_at: usuarios.created_at,
+        updated_at: usuarios.updated_at,
+        nombres: sql<string>`COALESCE(${personal.nombres}, ${usuarios.username})`,
+        apellidos: sql<string>`COALESCE(${personal.apellidos}, '')`,
+        firma_url: personal.firma_url,
+        rol_nombre: roles.nombre,
+        rol_descripcion: roles.descripcion,
+      })
+      .from(usuarios)
+      .innerJoin(roles, eq(usuarios.rol_id, roles.id))
+      .leftJoin(personal, eq(usuarios.personal_id, personal.id))
+      .where(and(eq(usuarios.username, username), eq(usuarios.activo, true)));
 
-    const result = await pool.query(query, [username]);
-
-    if (result.rows.length === 0) {
+    if (!user) {
       throw new Error('Usuario o contraseña incorrectos');
     }
 
-    const user = result.rows[0];
-
     // Verificar contraseña
     const isPasswordValid = await bcrypt.compare(password, user.password_hash);
-
     if (!isPasswordValid) {
       throw new Error('Usuario o contraseña incorrectos');
     }
 
-    // Obtener sedes del usuario
-    const sedes = await this.getUserSedes(user.id);
-
-    // Obtener permisos del usuario
-    const permisos = await this.getUserPermisos(user.rol_id);
+    // Obtener sedes y permisos
+    const userSedes = await this.getUserSedes(user.id);
+    const userPermisos = await this.getUserPermisos(user.rol_id);
 
     // Generar tokens
     const accessToken = this.generateAccessToken({
@@ -69,22 +89,29 @@ export class AuthService {
 
     // Guardar refresh token en BD
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7); // 7 días
+    expiresAt.setDate(expiresAt.getDate() + 7);
 
-    await pool.query(
-      'UPDATE usuarios SET refresh_token = $1, refresh_token_expires_at = $2 WHERE id = $3',
-      [refreshToken, expiresAt, user.id]
-    );
+    await db
+      .update(usuarios)
+      .set({
+        refresh_token: refreshToken,
+        refresh_token_expires_at: expiresAt.toISOString() as any,
+      })
+      .where(eq(usuarios.id, user.id));
 
-    // Retornar respuesta (sin datos sensibles)
-    const { password_hash, refresh_token, refresh_token_expires_at, ...userWithoutSensitiveData } = user;
+    const {
+      password_hash: _,
+      refresh_token: __,
+      refresh_token_expires_at: ___,
+      ...userWithoutSensitiveData
+    } = user;
 
     return {
       user: {
         ...userWithoutSensitiveData,
-        sedes,
-        permisos,
-      },
+        sedes: userSedes,
+        permisos: userPermisos,
+      } as any,
       accessToken,
       refreshToken,
     };
@@ -93,39 +120,39 @@ export class AuthService {
   /**
    * Refresh token
    */
-  async refreshToken(oldRefreshToken: string): Promise<{ accessToken: string; refreshToken: string }> {
+  async refreshToken(
+    oldRefreshToken: string
+  ): Promise<{ accessToken: string; refreshToken: string }> {
     try {
-      // Verificar token
       const decoded = jwt.verify(
         oldRefreshToken,
         process.env.JWT_REFRESH_SECRET || 'refresh_secret'
       ) as JwtPayload;
 
-      // Buscar usuario y verificar que el token coincida
-      const query = `
-        SELECT id, username, email, rol_id, refresh_token, refresh_token_expires_at
-        FROM usuarios
-        WHERE id = $1 AND activo = true
-      `;
+      const [user] = await db
+        .select({
+          id: usuarios.id,
+          username: usuarios.username,
+          email: usuarios.email,
+          rol_id: usuarios.rol_id,
+          refresh_token: usuarios.refresh_token,
+          refresh_token_expires_at: usuarios.refresh_token_expires_at,
+        })
+        .from(usuarios)
+        .where(and(eq(usuarios.id, decoded.userId), eq(usuarios.activo, true)));
 
-      const result = await pool.query(query, [decoded.userId]);
-
-      if (result.rows.length === 0) {
+      if (!user) {
         throw new Error('Usuario no encontrado');
       }
 
-      const user = result.rows[0];
-
-      // Verificar que el token coincida y no esté expirado
       if (user.refresh_token !== oldRefreshToken) {
         throw new Error('Token inválido');
       }
 
-      if (new Date() > new Date(user.refresh_token_expires_at)) {
+      if (!user.refresh_token_expires_at || new Date() > new Date(user.refresh_token_expires_at)) {
         throw new Error('Refresh token expirado');
       }
 
-      // Generar nuevos tokens
       const accessToken = this.generateAccessToken({
         userId: user.id,
         username: user.username,
@@ -140,14 +167,16 @@ export class AuthService {
         rolId: user.rol_id,
       });
 
-      // Actualizar refresh token en BD
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 7);
 
-      await pool.query(
-        'UPDATE usuarios SET refresh_token = $1, refresh_token_expires_at = $2 WHERE id = $3',
-        [refreshToken, expiresAt, user.id]
-      );
+      await db
+        .update(usuarios)
+        .set({
+          refresh_token: refreshToken,
+          refresh_token_expires_at: expiresAt.toISOString() as any,
+        })
+        .where(eq(usuarios.id, user.id));
 
       return {
         accessToken,
@@ -162,49 +191,49 @@ export class AuthService {
    * Logout
    */
   async logout(userId: number): Promise<void> {
-    await pool.query(
-      'UPDATE usuarios SET refresh_token = NULL, refresh_token_expires_at = NULL WHERE id = $1',
-      [userId]
-    );
+    await db
+      .update(usuarios)
+      .set({
+        refresh_token: null,
+        refresh_token_expires_at: null,
+      })
+      .where(eq(usuarios.id, userId));
   }
 
   /**
    * Obtener usuario con permisos
    */
   async getUserWithPermissions(userId: number): Promise<UsuarioConPermisos> {
-    // Obtener usuario con rol
-    const userQuery = `
-      SELECT u.*, r.nombre as rol_nombre, r.descripcion as rol_descripcion
-      FROM usuarios u
-      INNER JOIN roles r ON u.rol_id = r.id
-      WHERE u.id = $1 AND u.activo = true
-    `;
+    const [user] = await db
+      .select({
+        id: usuarios.id,
+        username: usuarios.username,
+        email: usuarios.email,
+        rol_id: usuarios.rol_id,
+        personal_id: usuarios.personal_id,
+        activo: usuarios.activo,
+        created_at: usuarios.created_at,
+        updated_at: usuarios.updated_at,
+        nombres: sql<string>`COALESCE(${personal.nombres}, ${usuarios.username})`,
+        apellidos: sql<string>`COALESCE(${personal.apellidos}, '')`,
+        firma_url: personal.firma_url,
+        rol_nombre: roles.nombre,
+        rol_descripcion: roles.descripcion,
+      })
+      .from(usuarios)
+      .innerJoin(roles, eq(usuarios.rol_id, roles.id))
+      .leftJoin(personal, eq(usuarios.personal_id, personal.id))
+      .where(and(eq(usuarios.id, userId), eq(usuarios.activo, true)));
 
-    const userResult = await pool.query(userQuery, [userId]);
-
-    if (userResult.rows.length === 0) {
+    if (!user) {
       throw new Error('Usuario no encontrado');
     }
 
-    const user = userResult.rows[0];
-
-    // Obtener permisos del rol
-    const permissionsQuery = `
-      SELECT p.codigo
-      FROM roles_permisos rp
-      INNER JOIN permisos p ON rp.permiso_id = p.id
-      WHERE rp.rol_id = $1
-    `;
-
-    const permissionsResult = await pool.query(permissionsQuery, [user.rol_id]);
-    const permisos = permissionsResult.rows.map((row) => row.codigo);
-
-    // Remover datos sensibles
-    const { password_hash, refresh_token, refresh_token_expires_at, ...userWithoutSensitiveData } = user;
+    const permisosList = await this.getUserPermisos(user.rol_id);
 
     return {
-      ...userWithoutSensitiveData,
-      permisos,
+      ...(user as any),
+      permisos: permisosList,
     };
   }
 
@@ -216,243 +245,258 @@ export class AuthService {
    * Obtener sedes de un usuario
    */
   async getUserSedes(userId: number): Promise<{ id: number; nombre: string }[]> {
-    const query = `
-      SELECT s.id, s.nombre
-      FROM usuarios_sedes us
-      INNER JOIN sedes s ON us.sede_id = s.id
-      WHERE us.usuario_id = $1 AND s.activo = true
-      ORDER BY s.nombre
-    `;
-    const result = await pool.query(query, [userId]);
-    return result.rows;
+    return db
+      .select({
+        id: sedes.id,
+        nombre: sedes.nombre,
+      })
+      .from(usuariosSedes)
+      .innerJoin(sedes, eq(usuariosSedes.sede_id, sedes.id))
+      .where(and(eq(usuariosSedes.usuario_id, userId), eq(sedes.activo, true)))
+      .orderBy(asc(sedes.nombre));
   }
 
   /**
    * Obtener permisos de un rol
    */
   async getUserPermisos(rolId: number): Promise<string[]> {
-    const query = `
-      SELECT p.codigo
-      FROM roles_permisos rp
-      INNER JOIN permisos p ON rp.permiso_id = p.id
-      WHERE rp.rol_id = $1
-    `;
-    const result = await pool.query(query, [rolId]);
-    return result.rows.map((row) => row.codigo);
+    const rows = await db
+      .select({ codigo: permisos.codigo })
+      .from(rolesPermisos)
+      .innerJoin(permisos, eq(rolesPermisos.permiso_id, permisos.id))
+      .where(eq(rolesPermisos.rol_id, rolId));
+
+    return rows.map((row) => row.codigo);
   }
 
   /**
    * Asignar sedes a un usuario
    */
   async assignUserSedes(userId: number, sedeIds: number[]): Promise<void> {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      
-      // Eliminar asignaciones anteriores
-      await client.query('DELETE FROM usuarios_sedes WHERE usuario_id = $1', [userId]);
-      
-      // Insertar nuevas asignaciones
+    await db.transaction(async (tx) => {
+      await tx.delete(usuariosSedes).where(eq(usuariosSedes.usuario_id, userId));
+
       if (sedeIds.length > 0) {
-        const values = sedeIds.map((_, idx) => `($1, $${idx + 2})`).join(', ');
-        await client.query(
-          `INSERT INTO usuarios_sedes (usuario_id, sede_id) VALUES ${values}`,
-          [userId, ...sedeIds]
+        await tx.insert(usuariosSedes).values(
+          sedeIds.map((sede_id) => ({
+            usuario_id: userId,
+            sede_id,
+          }))
         );
       }
-      
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   /**
    * Crear usuario
    */
   async createUser(userData: CreateUserRequest): Promise<Usuario> {
-    const { username, email, password, nombres, apellidos, rol_id, firma_url, sede_ids } = userData;
+    const { username, email, password, rol_id, personal_id, sede_ids } = userData;
 
-    // Verificar si username ya existe
-    const existingUser = await pool.query('SELECT id FROM usuarios WHERE username = $1 OR email = $2', [
-      username,
-      email,
-    ]);
+    // Verificar si username o email ya existe
+    const existing = await db
+      .select({ id: usuarios.id })
+      .from(usuarios)
+      .where(or(eq(usuarios.username, username), eq(usuarios.email, email)));
 
-    if (existingUser.rows.length > 0) {
+    if (existing.length > 0) {
       throw new Error('El usuario o email ya existe');
     }
 
-    // Hash de contraseña
     const password_hash = await bcrypt.hash(password, 10);
 
-    // Insertar usuario
-    const query = `
-      INSERT INTO usuarios (username, email, password_hash, nombres, apellidos, rol_id, firma_url)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING id, username, email, nombres, apellidos, rol_id, firma_url, activo, created_at, updated_at
-    `;
+    return await db.transaction(async (tx) => {
+      const [newUser] = await tx
+        .insert(usuarios)
+        .values({
+          username,
+          email,
+          password_hash,
+          rol_id,
+          personal_id: personal_id || null,
+        })
+        .returning({
+          id: usuarios.id,
+          username: usuarios.username,
+          email: usuarios.email,
+          rol_id: usuarios.rol_id,
+          personal_id: usuarios.personal_id,
+          activo: usuarios.activo,
+          created_at: usuarios.created_at,
+          updated_at: usuarios.updated_at,
+        });
 
-    const result = await pool.query(query, [username, email, password_hash, nombres, apellidos, rol_id, firma_url]);
-    const user = result.rows[0];
+      if (sede_ids && sede_ids.length > 0) {
+        await tx.insert(usuariosSedes).values(
+          sede_ids.map((sede_id) => ({
+            usuario_id: newUser.id,
+            sede_id,
+          }))
+        );
+      }
 
-    // Asignar sedes si se proporcionaron
-    if (sede_ids && sede_ids.length > 0) {
-      await this.assignUserSedes(user.id, sede_ids);
-    }
-
-    return user;
+      return newUser as any;
+    });
   }
 
   /**
    * Obtener todos los usuarios
    */
   async getAllUsers(): Promise<UsuarioConRol[]> {
-    const query = `
-      SELECT u.*, r.nombre as rol_nombre, r.descripcion as rol_descripcion
-      FROM usuarios u
-      INNER JOIN roles r ON u.rol_id = r.id
-      ORDER BY u.created_at DESC
-    `;
+    const userRows = await db
+      .select({
+        id: usuarios.id,
+        username: usuarios.username,
+        email: usuarios.email,
+        rol_id: usuarios.rol_id,
+        personal_id: usuarios.personal_id,
+        activo: usuarios.activo,
+        created_at: usuarios.created_at,
+        updated_at: usuarios.updated_at,
+        nombres: sql<string>`COALESCE(${personal.nombres}, ${usuarios.username})`,
+        apellidos: sql<string>`COALESCE(${personal.apellidos}, '')`,
+        firma_url: personal.firma_url,
+        rol_nombre: roles.nombre,
+        rol_descripcion: roles.descripcion,
+      })
+      .from(usuarios)
+      .innerJoin(roles, eq(usuarios.rol_id, roles.id))
+      .leftJoin(personal, eq(usuarios.personal_id, personal.id))
+      .orderBy(desc(usuarios.created_at));
 
-    const result = await pool.query(query);
-
-    // Obtener sedes para cada usuario
-    const usersWithSedes = await Promise.all(
-      result.rows.map(async (user) => {
-        const sedes = await this.getUserSedes(user.id);
-        const { password_hash, refresh_token, refresh_token_expires_at, ...userWithoutSensitiveData } = user;
+    return await Promise.all(
+      userRows.map(async (u) => {
+        const userSedes = await this.getUserSedes(u.id);
         return {
-          ...userWithoutSensitiveData,
-          sedes,
-        };
+          ...u,
+          sedes: userSedes,
+        } as any;
       })
     );
-
-    return usersWithSedes;
   }
 
   /**
    * Obtener usuario por ID
    */
   async getUserById(id: number): Promise<UsuarioConRol> {
-    const query = `
-      SELECT u.*, r.nombre as rol_nombre, r.descripcion as rol_descripcion
-      FROM usuarios u
-      INNER JOIN roles r ON u.rol_id = r.id
-      WHERE u.id = $1
-    `;
+    const [user] = await db
+      .select({
+        id: usuarios.id,
+        username: usuarios.username,
+        email: usuarios.email,
+        rol_id: usuarios.rol_id,
+        personal_id: usuarios.personal_id,
+        activo: usuarios.activo,
+        created_at: usuarios.created_at,
+        updated_at: usuarios.updated_at,
+        nombres: sql<string>`COALESCE(${personal.nombres}, ${usuarios.username})`,
+        apellidos: sql<string>`COALESCE(${personal.apellidos}, '')`,
+        firma_url: personal.firma_url,
+        rol_nombre: roles.nombre,
+        rol_descripcion: roles.descripcion,
+      })
+      .from(usuarios)
+      .innerJoin(roles, eq(usuarios.rol_id, roles.id))
+      .leftJoin(personal, eq(usuarios.personal_id, personal.id))
+      .where(eq(usuarios.id, id));
 
-    const result = await pool.query(query, [id]);
-
-    if (result.rows.length === 0) {
+    if (!user) {
       throw new Error('Usuario no encontrado');
     }
 
-    const sedes = await this.getUserSedes(id);
-    const { password_hash, refresh_token, refresh_token_expires_at, ...userWithoutSensitiveData } = result.rows[0];
-
+    const userSedes = await this.getUserSedes(id);
     return {
-      ...userWithoutSensitiveData,
-      sedes,
-    };
+      ...user,
+      sedes: userSedes,
+    } as any;
   }
 
   /**
    * Actualizar usuario
    */
   async updateUser(id: number, userData: UpdateUserRequest): Promise<Usuario> {
-    const fields: string[] = [];
-    const values: any[] = [];
-    let paramIndex = 1;
+    const updateData: Partial<typeof usuarios.$inferInsert> = {};
 
-    // Construir query dinámicamente
-    if (userData.email !== undefined) {
-      fields.push(`email = $${paramIndex++}`);
-      values.push(userData.email);
-    }
-
+    if (userData.email !== undefined) updateData.email = userData.email;
     if (userData.password !== undefined) {
-      const password_hash = await bcrypt.hash(userData.password, 10);
-      fields.push(`password_hash = $${paramIndex++}`);
-      values.push(password_hash);
+      updateData.password_hash = await bcrypt.hash(userData.password, 10);
     }
+    if (userData.rol_id !== undefined) updateData.rol_id = userData.rol_id;
+    if (userData.personal_id !== undefined) updateData.personal_id = userData.personal_id;
+    if (userData.activo !== undefined) updateData.activo = userData.activo;
 
-    if (userData.nombres !== undefined) {
-      fields.push(`nombres = $${paramIndex++}`);
-      values.push(userData.nombres);
-    }
-
-    if (userData.apellidos !== undefined) {
-      fields.push(`apellidos = $${paramIndex++}`);
-      values.push(userData.apellidos);
-    }
-
-    if (userData.rol_id !== undefined) {
-      fields.push(`rol_id = $${paramIndex++}`);
-      values.push(userData.rol_id);
-    }
-
-    if (userData.firma_url !== undefined) {
-      fields.push(`firma_url = $${paramIndex++}`);
-      values.push(userData.firma_url);
-    }
-
-    if (userData.activo !== undefined) {
-      fields.push(`activo = $${paramIndex++}`);
-      values.push(userData.activo);
-    }
-
-    // Actualizar sedes si se proporcionaron
-    if (userData.sede_ids !== undefined) {
-      await this.assignUserSedes(id, userData.sede_ids);
-    }
-
-    if (fields.length === 0 && userData.sede_ids === undefined) {
+    if (Object.keys(updateData).length === 0 && userData.sede_ids === undefined) {
       throw new Error('No hay campos para actualizar');
     }
 
-    let user;
-    if (fields.length > 0) {
-      // Agregar ID al final
-      values.push(id);
-
-      const query = `
-        UPDATE usuarios
-        SET ${fields.join(', ')}
-        WHERE id = $${paramIndex}
-        RETURNING id, username, email, nombres, apellidos, rol_id, firma_url, activo, created_at, updated_at
-      `;
-
-      const result = await pool.query(query, values);
-
-      if (result.rows.length === 0) {
-        throw new Error('Usuario no encontrado');
+    return await db.transaction(async (tx) => {
+      if (userData.sede_ids !== undefined) {
+        await tx.delete(usuariosSedes).where(eq(usuariosSedes.usuario_id, id));
+        if (userData.sede_ids.length > 0) {
+          await tx.insert(usuariosSedes).values(
+            userData.sede_ids.map((sede_id) => ({
+              usuario_id: id,
+              sede_id,
+            }))
+          );
+        }
       }
 
-      user = result.rows[0];
-    } else {
-      // Solo se actualizaron sedes, obtener usuario actual
-      const result = await pool.query(
-        'SELECT id, username, email, nombres, apellidos, rol_id, firma_url, activo, created_at, updated_at FROM usuarios WHERE id = $1',
-        [id]
-      );
-      user = result.rows[0];
-    }
+      if (Object.keys(updateData).length > 0) {
+        updateData.updated_at = sql`CURRENT_TIMESTAMP` as any;
 
-    return user;
+        const [updated] = await tx
+          .update(usuarios)
+          .set(updateData)
+          .where(eq(usuarios.id, id))
+          .returning({
+            id: usuarios.id,
+            username: usuarios.username,
+            email: usuarios.email,
+            rol_id: usuarios.rol_id,
+            personal_id: usuarios.personal_id,
+            activo: usuarios.activo,
+            created_at: usuarios.created_at,
+            updated_at: usuarios.updated_at,
+          });
+
+        if (!updated) {
+          throw new Error('Usuario no encontrado');
+        }
+
+        return updated as any;
+      }
+
+      const [current] = await tx
+        .select({
+          id: usuarios.id,
+          username: usuarios.username,
+          email: usuarios.email,
+          rol_id: usuarios.rol_id,
+          personal_id: usuarios.personal_id,
+          activo: usuarios.activo,
+          created_at: usuarios.created_at,
+          updated_at: usuarios.updated_at,
+        })
+        .from(usuarios)
+        .where(eq(usuarios.id, id));
+
+      if (!current) throw new Error('Usuario no encontrado');
+      return current as any;
+    });
   }
 
   /**
    * Eliminar usuario (soft delete)
    */
   async deleteUser(id: number): Promise<void> {
-    const result = await pool.query('UPDATE usuarios SET activo = false WHERE id = $1', [id]);
+    const rows = await db
+      .update(usuarios)
+      .set({ activo: false, updated_at: sql`CURRENT_TIMESTAMP` as any })
+      .where(eq(usuarios.id, id))
+      .returning({ id: usuarios.id });
 
-    if (result.rowCount === 0) {
+    if (rows.length === 0) {
       throw new Error('Usuario no encontrado');
     }
   }
@@ -460,35 +504,34 @@ export class AuthService {
   /**
    * Obtener todos los roles
    */
-  async getAllRoles(): Promise<{ id: number; nombre: string; descripcion: string; activo: boolean }[]> {
-    const result = await pool.query(`
-      SELECT id, nombre, descripcion, activo
-      FROM roles
-      WHERE activo = true
-      ORDER BY nombre ASC
-    `);
-    return result.rows;
+  async getAllRoles(): Promise<{ id: number; nombre: string; descripcion: string | null; activo: boolean | null }[]> {
+    return db
+      .select({
+        id: roles.id,
+        nombre: roles.nombre,
+        descripcion: roles.descripcion,
+        activo: roles.activo,
+      })
+      .from(roles)
+      .where(eq(roles.activo, true))
+      .orderBy(asc(roles.nombre));
   }
 
   // ============================================
   // HELPERS
   // ============================================
 
-  /**
-   * Generar Access Token
-   */
   private generateAccessToken(payload: JwtPayload): string {
     return jwt.sign(payload, process.env.JWT_ACCESS_SECRET || 'access_secret', {
       expiresIn: (process.env.JWT_ACCESS_EXPIRES_IN || '8h') as string,
     } as jwt.SignOptions);
   }
 
-  /**
-   * Generar Refresh Token
-   */
   private generateRefreshToken(payload: JwtPayload): string {
     return jwt.sign(payload, process.env.JWT_REFRESH_SECRET || 'refresh_secret', {
       expiresIn: (process.env.JWT_REFRESH_EXPIRES_IN || '7d') as string,
     } as jwt.SignOptions);
   }
 }
+
+export const authService = new AuthService();

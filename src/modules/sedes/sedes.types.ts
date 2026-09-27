@@ -1,13 +1,7 @@
-export interface Sede {
-  id: number;
-  nombre: string;
-  direccion?: string;
-  telefono?: string;
-  email?: string;
-  activo: boolean;
-  created_at: Date;
-  updated_at: Date;
-}
+import type { InferSelectModel } from 'drizzle-orm';
+import { sedes } from '../../db';
+
+export type Sede = InferSelectModel<typeof sedes>;
 
 export interface CreateSedeInput {
   nombre: string;

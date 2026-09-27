@@ -15,6 +15,7 @@ export const updateConfiguracionSchema = z.object({
     pie_reporte: z.string().optional().nullable(),
     moneda: z.string().max(10).optional(),
     igv_porcentaje: z.number().min(0).max(100).optional(),
+    regimen_laboral: z.enum(['GENERAL', 'MYPE']).optional(),
   }),
 });
 

@@ -2,7 +2,8 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { JwtPayload } from '../modules/auth/auth.types';
 import { errorResponse } from '../utils/response.utils';
-import pool from '../config/database';
+import { db, usuarios, roles, rolesPermisos, permisos } from '../db';
+import { eq, and } from 'drizzle-orm';
 
 // Extender Request para incluir user
 declare global {
@@ -30,6 +31,7 @@ export const authenticateToken = async (
   next: NextFunction
 ): Promise<void | Response> => {
   try {
+    // Obtener token del header Authorization
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
@@ -44,12 +46,12 @@ export const authenticateToken = async (
     ) as JwtPayload;
 
     // Verificar que el usuario existe y está activo
-    const userQuery = await pool.query(
-      'SELECT id FROM usuarios WHERE id = $1 AND activo = true',
-      [decoded.userId]
-    );
+    const [user] = await db
+      .select({ id: usuarios.id })
+      .from(usuarios)
+      .where(and(eq(usuarios.id, decoded.userId), eq(usuarios.activo, true)));
 
-    if (userQuery.rows.length === 0) {
+    if (!user) {
       return errorResponse(res, 'Usuario no autorizado', null, 401);
     }
 
@@ -80,15 +82,12 @@ export const requirePermissions = (requiredPermissions: string[], requireAll: bo
       }
 
       // Obtener permisos del usuario
-      const permissionsQuery = `
-        SELECT p.codigo
-        FROM roles_permisos rp
-        INNER JOIN permisos p ON rp.permiso_id = p.id
-        WHERE rp.rol_id = $1
-      `;
-
-      const result = await pool.query(permissionsQuery, [req.user.rolId]);
-      const userPermissions = result.rows.map((row: any) => row.codigo);
+      const result = await db
+        .select({ codigo: permisos.codigo })
+        .from(rolesPermisos)
+        .innerJoin(permisos, eq(rolesPermisos.permiso_id, permisos.id))
+        .where(eq(rolesPermisos.rol_id, req.user.rolId));
+      const userPermissions = result.map((row) => row.codigo);
 
       // Verificar permisos
       let hasPermissions: boolean;
@@ -137,16 +136,17 @@ export const requireAdmin = async (
     }
 
     // Obtener rol del usuario
-    const roleQuery = await pool.query(
-      'SELECT r.nombre FROM usuarios u INNER JOIN roles r ON u.rol_id = r.id WHERE u.id = $1',
-      [req.user.userId]
-    );
+    const [roleRow] = await db
+      .select({ nombre: roles.nombre })
+      .from(usuarios)
+      .innerJoin(roles, eq(usuarios.rol_id, roles.id))
+      .where(eq(usuarios.id, req.user.userId));
 
-    if (roleQuery.rows.length === 0) {
+    if (!roleRow) {
       return errorResponse(res, 'Usuario no encontrado', null, 404);
     }
 
-    const roleName = roleQuery.rows[0].nombre;
+    const roleName = roleRow.nombre;
 
     if (roleName !== 'SUPER_ADMIN' && roleName !== 'ADMIN') {
       return errorResponse(res, 'Acceso denegado. Se requiere rol de administrador', null, 403);

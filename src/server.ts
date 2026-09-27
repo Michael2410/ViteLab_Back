@@ -3,7 +3,7 @@ import { testConnection } from './config/database';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import dotenv from 'dotenv';
-import { whatsappService } from './modules/whatsapp';
+import { whatsappService } from './modules/laboratorio/whatsapp';
 import { setSocketIO } from './config/socket';
 
 dotenv.config();

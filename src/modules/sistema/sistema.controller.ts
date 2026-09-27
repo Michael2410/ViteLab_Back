@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { sistemaService } from './sistema.service';
-import pool from '../../config/database';
+import { db, usuariosSedes } from '../../db';
+import { eq } from 'drizzle-orm';
 import { successResponse, errorResponse } from '../../utils/response.utils';
 import type { UpdateConfiguracionInput } from './sistema.types';
 
@@ -45,12 +46,12 @@ class SistemaController {
       let sedesUsuario: number[] | undefined;
       
       if (usuarioId) {
-        const sedesResult = await pool.query(
-          'SELECT sede_id FROM usuarios_sedes WHERE usuario_id = $1', 
-          [usuarioId]
-        );
-        if (sedesResult.rows.length > 0) {
-          sedesUsuario = sedesResult.rows.map((r: any) => r.sede_id);
+        const sedesResult = await db
+          .select({ sedeId: usuariosSedes.sede_id })
+          .from(usuariosSedes)
+          .where(eq(usuariosSedes.usuario_id, usuarioId));
+        if (sedesResult.length > 0) {
+          sedesUsuario = sedesResult.map((r) => r.sedeId);
         }
       }
 
