@@ -13,6 +13,7 @@ import uploadsRoutes from './modules/uploads/uploads.routes';
 import sistemaRoutes from './modules/sistema/sistema.routes';
 import rolesRoutes from './modules/roles/roles.routes';
 import personalRoutes from './modules/personal';
+import { almacenRouter } from './modules/almacen';
 import {
   areasRoutes,
   metodosRoutes,
@@ -154,6 +155,9 @@ app.use('/api/whatsapp', whatsappRoutes);
 
 // Módulo de Personal (RRHH)
 app.use('/api/personal', personalRoutes);
+
+// Módulo de Almacén & Logística
+app.use('/api/almacen', almacenRouter);
 
 // ============================================
 // ERROR HANDLING

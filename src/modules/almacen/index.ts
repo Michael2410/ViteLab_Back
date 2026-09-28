@@ -1,0 +1,14 @@
+export { default as almacenRouter } from './almacen.routes';
+export * from './productos';
+export * from './proveedores';
+export * from './maestros';
+export * from './ingresos';
+export * from './stock';
+export * from './despachos';
+export * from './custodia';
+export * from './consumos';
+export * from './pedidos';
+export * from './transferencias';
+export * from './ajustes';
+export * from './shared/almacen.errors';
+export * from './shared/almacen.types';

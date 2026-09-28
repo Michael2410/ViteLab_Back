@@ -453,7 +453,6 @@ router.patch(
  *     responses:
  *       200:
  *         description: Condiciones pre-analíticas obtenidas exitosamente
-match
  */
 router.get(
   '/:id/preanalitica',
