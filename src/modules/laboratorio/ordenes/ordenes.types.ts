@@ -134,10 +134,14 @@ export interface OrdenDetalle extends Orden {
     dni: string;
     nombres: string;
     apellidos: string;
+    apellido_paterno?: string;
+    apellido_materno?: string;
     fecha_nacimiento: Date;
+    genero?: string;
     sexo: string;
     telefono?: string;
     email?: string;
+    direccion?: string;
   };
   sede: {
     id: number;

@@ -37,8 +37,8 @@ export interface AlmacenPedidoCompleto {
   almacen_nombre?: string;
   sede_id: number;
   sede_nombre?: string;
-  solicitante_nombres?: string;
-  solicitante_apellidos?: string;
+  solicitante_nombres?: string | null;
+  solicitante_apellidos?: string | null;
   solicitante_documento?: string | null;
   area_nombre?: string | null;
   usuario_registro_nombre?: string | null;

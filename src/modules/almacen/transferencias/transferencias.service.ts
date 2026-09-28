@@ -208,7 +208,7 @@ export class AlmacenTransferenciasService {
 
     if (!almOrigen) throw new AlmacenError('Almacén origen no encontrado', 404);
 
-    return await db.transaction(async (tx) => {
+    const transfCreada = await db.transaction(async (tx) => {
       const fechaNegocio = new Date().toISOString().slice(0, 10);
       const numero = await obtenerSiguienteCorrelativo(tx, 'TRA', almOrigen.sede_id, fechaNegocio);
 
@@ -276,8 +276,10 @@ export class AlmacenTransferenciasService {
         });
       }
 
-      return this.obtener(transferencia.id);
+      return transferencia;
     });
+
+    return this.obtener(transfCreada.id);
   }
 
   async recibir(

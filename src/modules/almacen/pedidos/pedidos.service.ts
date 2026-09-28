@@ -83,7 +83,7 @@ export class AlmacenPedidosService {
       .select({ total: count() })
       .from(almacenPedidos)
       .innerJoin(almacenAlmacenes, eq(almacenPedidos.almacen_id, almacenAlmacenes.id))
-      .innerJoin(personal, eq(almacenPedidos.solicitante_personal_id, personal.id))
+      .leftJoin(personal, eq(almacenPedidos.solicitante_personal_id, personal.id))
       .where(where);
 
     const rows = await db
@@ -116,7 +116,7 @@ export class AlmacenPedidosService {
       })
       .from(almacenPedidos)
       .innerJoin(almacenAlmacenes, eq(almacenPedidos.almacen_id, almacenAlmacenes.id))
-      .innerJoin(personal, eq(almacenPedidos.solicitante_personal_id, personal.id))
+      .leftJoin(personal, eq(almacenPedidos.solicitante_personal_id, personal.id))
       .leftJoin(areas, eq(almacenPedidos.area_id, areas.id))
       .leftJoin(usuarios, eq(almacenPedidos.usuario_registro_id, usuarios.id))
       .where(where)
@@ -164,7 +164,7 @@ export class AlmacenPedidosService {
       })
       .from(almacenPedidos)
       .innerJoin(almacenAlmacenes, eq(almacenPedidos.almacen_id, almacenAlmacenes.id))
-      .innerJoin(personal, eq(almacenPedidos.solicitante_personal_id, personal.id))
+      .leftJoin(personal, eq(almacenPedidos.solicitante_personal_id, personal.id))
       .leftJoin(areas, eq(almacenPedidos.area_id, areas.id))
       .leftJoin(usuarios, eq(almacenPedidos.usuario_registro_id, usuarios.id))
       .where(eq(almacenPedidos.id, id))
@@ -188,7 +188,7 @@ export class AlmacenPedidosService {
       })
       .from(almacenPedidoDetalle)
       .innerJoin(almacenProductos, eq(almacenPedidoDetalle.producto_id, almacenProductos.id))
-      .innerJoin(almacenUnidadesMedida, eq(almacenProductos.unidad_medida_id, almacenUnidadesMedida.id))
+      .leftJoin(almacenUnidadesMedida, eq(almacenProductos.unidad_medida_id, almacenUnidadesMedida.id))
       .where(eq(almacenPedidoDetalle.pedido_id, id));
 
     const items: ItemPedidoDetalle[] = [];
@@ -215,8 +215,8 @@ export class AlmacenPedidosService {
         observacion: d.observacion,
         producto_codigo: d.producto_codigo,
         producto_nombre: d.producto_nombre,
-        unidad_medida_codigo: d.unidad_medida_codigo,
-        unidad_medida_nombre: d.unidad_medida_nombre,
+        unidad_medida_codigo: d.unidad_medida_codigo || '',
+        unidad_medida_nombre: d.unidad_medida_nombre || '',
         stock_disponible_almacen: stk?.total || '0',
       });
     }
@@ -238,9 +238,16 @@ export class AlmacenPedidosService {
 
     if (!alm) throw new AlmacenError('Almacén no encontrado', 404);
 
-    return await db.transaction(async (tx) => {
+    const pedidoCreado = await db.transaction(async (tx) => {
       const fechaNegocio = new Date().toISOString().slice(0, 10);
       const numero = await obtenerSiguienteCorrelativo(tx, 'PED', alm.sede_id, fechaNegocio);
+
+      const obsItems = data.items
+        .map((i) => i.observacion?.trim())
+        .filter(Boolean) as string[];
+
+      const observacionesCabecera =
+        data.observaciones?.trim() || (obsItems.length > 0 ? obsItems.join('; ') : null);
 
       const [pedido] = await tx
         .insert(almacenPedidos)
@@ -250,7 +257,7 @@ export class AlmacenPedidosService {
           solicitante_personal_id: personalId,
           area_id: data.area_id,
           estado: 'PENDIENTE',
-          observaciones: data.observaciones,
+          observaciones: observacionesCabecera,
           usuario_registro_id: usuarioId,
         })
         .returning();
@@ -262,12 +269,14 @@ export class AlmacenPedidosService {
           cantidad_solicitada: item.cantidad_solicitada,
           cantidad_aprobada: item.cantidad_solicitada,
           cantidad_atendida: 0,
-          observacion: item.observacion,
+          observacion: item.observacion?.trim() || null,
         });
       }
 
-      return this.obtener(pedido.id);
+      return pedido;
     });
+
+    return this.obtener(pedidoCreado.id);
   }
 
   async aprobar(

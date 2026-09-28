@@ -7,7 +7,7 @@ export const pedidoIdSchema = z.object({ params: z.object({ id }) });
 export const pedidoItemSchema = z.object({
   producto_id: z.number().int().positive('El producto es requerido'),
   cantidad_solicitada: z.number().positive('La cantidad debe ser mayor a 0'),
-  observacion: z.string().max(255).optional(),
+  observacion: z.string().max(255).nullish(),
 });
 
 export const crearPedidoSchema = z.object({
@@ -15,7 +15,7 @@ export const crearPedidoSchema = z.object({
     almacen_id: z.number().int().positive('El almacén es requerido'),
     solicitante_personal_id: z.number().int().positive().optional(),
     area_id: z.number().int().positive().optional(),
-    observaciones: z.string().max(1000).optional(),
+    observaciones: z.string().max(1000).nullish(),
     items: z.array(pedidoItemSchema).min(1, 'Debe incluir al menos un ítem a solicitar'),
   }),
 });

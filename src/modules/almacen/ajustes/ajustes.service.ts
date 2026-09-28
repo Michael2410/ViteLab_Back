@@ -174,7 +174,7 @@ export class AlmacenAjustesService {
 
     if (!alm) throw new AlmacenError('Almacén no encontrado', 404);
 
-    return await db.transaction(async (tx) => {
+    const ajusteCreado = await db.transaction(async (tx) => {
       const fechaNegocio = new Date().toISOString().slice(0, 10);
       const numero = await obtenerSiguienteCorrelativo(tx, 'AJU', alm.sede_id, fechaNegocio);
 
@@ -203,8 +203,10 @@ export class AlmacenAjustesService {
         });
       }
 
-      return this.obtener(ajuste.id);
+      return ajuste;
     });
+
+    return this.obtener(ajusteCreado.id);
   }
 
   async aprobar(

@@ -209,7 +209,7 @@ export class AlmacenConsumosService {
   ): Promise<AlmacenConsumoCompleto> {
     const personalId = await this.resolverPersonalId(usuarioId, data.personal_id);
 
-    return await db.transaction(async (tx) => {
+    const consumoCreado = await db.transaction(async (tx) => {
       const fechaNegocio = (data.fecha || new Date().toISOString()).slice(0, 10);
       const numero = await obtenerSiguienteCorrelativo(tx, 'CON', data.sede_id, fechaNegocio);
 
@@ -282,8 +282,10 @@ export class AlmacenConsumosService {
         });
       }
 
-      return this.obtenerConsumo(consumo.id);
+      return consumo;
     });
+
+    return this.obtenerConsumo(consumoCreado.id);
   }
 
   async anularConsumo(
@@ -506,7 +508,7 @@ export class AlmacenConsumosService {
 
     if (!alm) throw new AlmacenError('Almacén destino no encontrado', 404);
 
-    return await db.transaction(async (tx) => {
+    const devolucionCreada = await db.transaction(async (tx) => {
       const fechaNegocio = (data.fecha || new Date().toISOString()).slice(0, 10);
       const numero = await obtenerSiguienteCorrelativo(tx, 'DEV', alm.sede_id, fechaNegocio);
 
@@ -586,8 +588,10 @@ export class AlmacenConsumosService {
         });
       }
 
-      return this.obtenerDevolucion(devolucion.id);
+      return devolucion;
     });
+
+    return this.obtenerDevolucion(devolucionCreada.id);
   }
 
   async anularDevolucion(
