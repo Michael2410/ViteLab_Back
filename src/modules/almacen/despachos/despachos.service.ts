@@ -307,6 +307,15 @@ export class AlmacenDespachosService {
 
       // f) Si hay pedido_id asociado, verificar si fue completado
       if (data.pedido_id) {
+        const [pedActual] = await tx
+          .select({
+            usuario_aprobacion_id: almacenPedidos.usuario_aprobacion_id,
+            estado: almacenPedidos.estado,
+          })
+          .from(almacenPedidos)
+          .where(eq(almacenPedidos.id, data.pedido_id))
+          .limit(1);
+
         const lineasPedido = await tx
           .select({
             solicitada: almacenPedidoDetalle.cantidad_solicitada,
@@ -326,6 +335,12 @@ export class AlmacenDespachosService {
             estado: todasCompletas ? 'ATENDIDO' : 'ATENDIDO_PARCIAL',
             fecha_atencion: sql`CURRENT_TIMESTAMP`,
             updated_at: sql`CURRENT_TIMESTAMP`,
+            ...(!pedActual?.usuario_aprobacion_id
+              ? {
+                  usuario_aprobacion_id: usuarioId,
+                  fecha_aprobacion: sql`CURRENT_TIMESTAMP`,
+                }
+              : {}),
           })
           .where(eq(almacenPedidos.id, data.pedido_id));
       }

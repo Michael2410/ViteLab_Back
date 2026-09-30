@@ -8,17 +8,17 @@ export const despachoItemSchema = z.object({
   producto_id: z.number().int().positive('El producto es requerido'),
   lote_id: z.number().int().positive('El lote es requerido'),
   cantidad: z.number().positive('La cantidad debe ser mayor a 0'),
-  pedido_detalle_id: z.number().int().positive().optional(),
+  pedido_detalle_id: z.number().int().positive().nullish(),
 });
 
 export const crearDespachoSchema = z.object({
   body: z.object({
     almacen_id: z.number().int().positive('El almacén es requerido'),
     receptor_personal_id: z.number().int().positive('El trabajador receptor es requerido'),
-    area_id: z.number().int().positive().optional(),
-    pedido_id: z.number().int().positive().optional(),
-    fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}/).optional(),
-    observaciones: z.string().max(1000).optional(),
+    area_id: z.number().int().positive().nullish(),
+    pedido_id: z.number().int().positive().nullish(),
+    fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}/).nullish(),
+    observaciones: z.string().max(1000).nullish(),
     items: z.array(despachoItemSchema).min(1, 'Debe incluir al menos un ítem para despachar'),
   }),
 });
