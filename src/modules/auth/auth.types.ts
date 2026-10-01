@@ -12,6 +12,7 @@ export interface Usuario {
   email: string;
   rol_id: number;
   activo: boolean;
+  two_factor_enabled?: boolean;
   created_at: Date;
   updated_at: Date;
 }
@@ -30,10 +31,40 @@ export interface LoginCredentials {
   password: string;
 }
 
-export interface LoginResponse {
+export interface Login2FARequiredResponse {
+  requires2FA: true;
+  setupNeeded: boolean;
+  tempToken: string;
+  qrCodeDataUrl?: string;
+  manualKey?: string;
+  emailMasked?: string;
+}
+
+export interface LoginSuccessResponse {
+  requires2FA?: false;
   user: Omit<UsuarioConRol, 'password_hash' | 'refresh_token' | 'refresh_token_expires_at'>;
   accessToken: string;
   refreshToken: string;
+  backupCodes?: string[];
+}
+
+export type LoginResponse = LoginSuccessResponse | Login2FARequiredResponse;
+
+export interface Verify2FARequest {
+  tempToken: string;
+  code: string;
+}
+
+export interface Confirm2FASetupRequest {
+  tempToken: string;
+  code: string;
+}
+
+export interface TwoFactorJwtPayload {
+  userId: number;
+  username: string;
+  email: string;
+  stage: '2fa_pending' | '2fa_setup_pending';
 }
 
 export interface RefreshTokenRequest {

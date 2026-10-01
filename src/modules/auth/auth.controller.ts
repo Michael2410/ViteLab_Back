@@ -5,6 +5,8 @@ import {
   refreshTokenSchema,
   createUserSchema,
   updateUserSchema,
+  verify2FASchema,
+  confirm2FASetupSchema,
 } from './auth.schema';
 import { successResponse, errorResponse, asyncHandler } from '../../utils/response.utils';
 
@@ -24,9 +26,64 @@ export class AuthController {
 
     try {
       const result = await authService.login(validation.data);
-      return successResponse(res, result, 'Login exitoso', 200);
+      const message = (result as any).requires2FA ? 'Verificación 2FA requerida' : 'Login exitoso';
+      return successResponse(res, result, message, 200);
     } catch (error: any) {
       return errorResponse(res, error.message, 401);
+    }
+  });
+
+  /**
+   * POST /api/auth/2fa/verify
+   */
+  verify2FA = asyncHandler(async (req: Request, res: Response) => {
+    const validation = verify2FASchema.safeParse(req.body);
+
+    if (!validation.success) {
+      return errorResponse(res, 'Código o token no válido', 400);
+    }
+
+    try {
+      const result = await authService.verify2FA(validation.data.tempToken, validation.data.code);
+      return successResponse(res, result, 'Autenticación exitosa', 200);
+    } catch (error: any) {
+      return errorResponse(res, error.message, 401);
+    }
+  });
+
+  /**
+   * POST /api/auth/2fa/confirm-setup
+   */
+  confirm2FASetup = asyncHandler(async (req: Request, res: Response) => {
+    const validation = confirm2FASetupSchema.safeParse(req.body);
+
+    if (!validation.success) {
+      return errorResponse(res, 'Código de 6 dígitos requerido', 400);
+    }
+
+    try {
+      const result = await authService.confirm2FASetup(validation.data.tempToken, validation.data.code);
+      return successResponse(res, result, 'Doble factor configurado exitosamente', 200);
+    } catch (error: any) {
+      return errorResponse(res, error.message, 400);
+    }
+  });
+
+  /**
+   * POST /api/auth/2fa/admin-reset/:userId
+   */
+  adminReset2FA = asyncHandler(async (req: Request, res: Response) => {
+    const userId = parseInt(req.params.userId);
+
+    if (isNaN(userId)) {
+      return errorResponse(res, 'ID de usuario inválido', 400);
+    }
+
+    try {
+      await authService.adminReset2FA(userId);
+      return successResponse(res, null, '2FA restablecido exitosamente para el usuario', 200);
+    } catch (error: any) {
+      return errorResponse(res, error.message, 500);
     }
   });
 

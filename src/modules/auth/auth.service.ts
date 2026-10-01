@@ -1,6 +1,9 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { eq, and, or, asc, desc, sql } from 'drizzle-orm';
+import { generateSecret, generateURI, verifySync } from 'otplib';
+import QRCode from 'qrcode';
+import crypto from 'crypto';
 import {
   db,
   usuarios,
@@ -17,10 +20,20 @@ import {
   LoginCredentials,
   LoginResponse,
   JwtPayload,
+  TwoFactorJwtPayload,
   CreateUserRequest,
   UpdateUserRequest,
   UsuarioConPermisos,
 } from './auth.types';
+
+function generateBackupCodes(count: number = 8): string[] {
+  const codes: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const raw = crypto.randomBytes(4).toString('hex').toUpperCase();
+    codes.push(`${raw.slice(0, 4)}-${raw.slice(4)}`);
+  }
+  return codes;
+}
 
 export class AuthService {
   // ============================================
@@ -28,7 +41,7 @@ export class AuthService {
   // ============================================
 
   /**
-   * Login de usuario
+   * Login de usuario (Paso 1: Validación de credenciales y bifurcación a 2FA)
    */
   async login(credentials: LoginCredentials): Promise<LoginResponse> {
     const { username, password } = credentials;
@@ -43,6 +56,8 @@ export class AuthService {
         rol_id: usuarios.rol_id,
         personal_id: usuarios.personal_id,
         activo: usuarios.activo,
+        two_factor_enabled: usuarios.two_factor_enabled,
+        two_factor_secret: usuarios.two_factor_secret,
         refresh_token: usuarios.refresh_token,
         refresh_token_expires_at: usuarios.refresh_token_expires_at,
         created_at: usuarios.created_at,
@@ -68,11 +83,226 @@ export class AuthService {
       throw new Error('Usuario o contraseña incorrectos');
     }
 
-    // Obtener sedes y permisos
+    // 2FA - CASO A: Usuario ya tiene 2FA configurado y activo
+    if (user.two_factor_enabled && user.two_factor_secret) {
+      const tempToken = jwt.sign(
+        {
+          userId: user.id,
+          username: user.username,
+          email: user.email,
+          stage: '2fa_pending',
+        } as TwoFactorJwtPayload,
+        process.env.JWT_ACCESS_SECRET || 'access_secret',
+        { expiresIn: '5m' }
+      );
+
+      return {
+        requires2FA: true,
+        setupNeeded: false,
+        tempToken,
+      };
+    }
+
+    // 2FA - CASO B: Usuario requiere vincular 2FA por primera vez (Onboarding TOTP)
+    const secret = generateSecret();
+    const otpauth = generateURI({ issuer: 'ViteLab', label: user.username, secret });
+    const qrCodeDataUrl = await QRCode.toDataURL(otpauth);
+
+    // Guardar secreto temporal para verificar en el paso 2
+    await db
+      .update(usuarios)
+      .set({ two_factor_temp_secret: secret })
+      .where(eq(usuarios.id, user.id));
+
+    const tempToken = jwt.sign(
+      {
+        userId: user.id,
+        username: user.username,
+        email: user.email,
+        stage: '2fa_setup_pending',
+      } as TwoFactorJwtPayload,
+      process.env.JWT_ACCESS_SECRET || 'access_secret',
+      { expiresIn: '10m' }
+    );
+
+    return {
+      requires2FA: true,
+      setupNeeded: true,
+      tempToken,
+      qrCodeDataUrl,
+      manualKey: secret,
+    };
+  }
+
+  /**
+   * Confirmar vinculación inicial de 2FA TOTP
+   */
+  async confirm2FASetup(tempToken: string, code: string): Promise<LoginResponse> {
+    let payload: TwoFactorJwtPayload;
+    try {
+      payload = jwt.verify(
+        tempToken,
+        process.env.JWT_ACCESS_SECRET || 'access_secret'
+      ) as TwoFactorJwtPayload;
+    } catch {
+      throw new Error('La sesión de configuración ha expirado. Inicia sesión nuevamente.');
+    }
+
+    if (payload.stage !== '2fa_setup_pending') {
+      throw new Error('Token de configuración no válido.');
+    }
+
+    const [user] = await db
+      .select({
+        id: usuarios.id,
+        username: usuarios.username,
+        email: usuarios.email,
+        rol_id: usuarios.rol_id,
+        personal_id: usuarios.personal_id,
+        activo: usuarios.activo,
+        two_factor_temp_secret: usuarios.two_factor_temp_secret,
+        created_at: usuarios.created_at,
+        updated_at: usuarios.updated_at,
+        nombres: sql<string>`COALESCE(${personal.nombres}, ${usuarios.username})`,
+        apellidos: sql<string>`COALESCE(${personal.apellidos}, '')`,
+        firma_url: personal.firma_url,
+        rol_nombre: roles.nombre,
+        rol_descripcion: roles.descripcion,
+      })
+      .from(usuarios)
+      .innerJoin(roles, eq(usuarios.rol_id, roles.id))
+      .leftJoin(personal, eq(usuarios.personal_id, personal.id))
+      .where(and(eq(usuarios.id, payload.userId), eq(usuarios.activo, true)));
+
+    if (!user || !user.two_factor_temp_secret) {
+      throw new Error('Configuración no encontrada o usuario inactivo.');
+    }
+
+    // Validar código TOTP contra el secreto temporal
+    const isValid = verifySync({ token: code.trim(), secret: user.two_factor_temp_secret, epochTolerance: 30 }).valid;
+    if (!isValid) {
+      throw new Error('Código de verificación incorrecto. Ingresa el código actual que muestra tu aplicación.');
+    }
+
+    // Generar códigos de respaldo únicos
+    const backupCodes = generateBackupCodes(8);
+
+    // Activar 2FA de forma definitiva
+    await db
+      .update(usuarios)
+      .set({
+        two_factor_enabled: true,
+        two_factor_secret: user.two_factor_temp_secret,
+        two_factor_temp_secret: null,
+        two_factor_backup_codes: JSON.stringify(backupCodes),
+      })
+      .where(eq(usuarios.id, user.id));
+
+    return this.completeLoginSession(user, backupCodes);
+  }
+
+  /**
+   * Verificar código 2FA en login habitual
+   */
+  async verify2FA(tempToken: string, code: string): Promise<LoginResponse> {
+    let payload: TwoFactorJwtPayload;
+    try {
+      payload = jwt.verify(
+        tempToken,
+        process.env.JWT_ACCESS_SECRET || 'access_secret'
+      ) as TwoFactorJwtPayload;
+    } catch {
+      throw new Error('La sesión de verificación ha expirado. Inicia sesión nuevamente.');
+    }
+
+    if (payload.stage !== '2fa_pending') {
+      throw new Error('Token de verificación no válido.');
+    }
+
+    const [user] = await db
+      .select({
+        id: usuarios.id,
+        username: usuarios.username,
+        email: usuarios.email,
+        rol_id: usuarios.rol_id,
+        personal_id: usuarios.personal_id,
+        activo: usuarios.activo,
+        two_factor_enabled: usuarios.two_factor_enabled,
+        two_factor_secret: usuarios.two_factor_secret,
+        two_factor_backup_codes: usuarios.two_factor_backup_codes,
+        created_at: usuarios.created_at,
+        updated_at: usuarios.updated_at,
+        nombres: sql<string>`COALESCE(${personal.nombres}, ${usuarios.username})`,
+        apellidos: sql<string>`COALESCE(${personal.apellidos}, '')`,
+        firma_url: personal.firma_url,
+        rol_nombre: roles.nombre,
+        rol_descripcion: roles.descripcion,
+      })
+      .from(usuarios)
+      .innerJoin(roles, eq(usuarios.rol_id, roles.id))
+      .leftJoin(personal, eq(usuarios.personal_id, personal.id))
+      .where(and(eq(usuarios.id, payload.userId), eq(usuarios.activo, true)));
+
+    if (!user || !user.two_factor_secret) {
+      throw new Error('Usuario no encontrado o 2FA no habilitado.');
+    }
+
+    // 1. Probar como código TOTP dinámico de 6 dígitos
+    let isValid = verifySync({ token: code.trim(), secret: user.two_factor_secret, epochTolerance: 30 }).valid;
+
+    // 2. Si no es válido como TOTP, verificar si es un código de respaldo
+    if (!isValid && user.two_factor_backup_codes) {
+      try {
+        const backupCodes: string[] = JSON.parse(user.two_factor_backup_codes);
+        const normalizedInput = code.trim().toUpperCase().replace(/[\s-]/g, '');
+        const foundIndex = backupCodes.findIndex(
+          (b) => b.replace(/-/g, '').toUpperCase() === normalizedInput
+        );
+
+        if (foundIndex !== -1) {
+          isValid = true;
+          // Eliminar el código usado (single-use)
+          backupCodes.splice(foundIndex, 1);
+          await db
+            .update(usuarios)
+            .set({ two_factor_backup_codes: JSON.stringify(backupCodes) })
+            .where(eq(usuarios.id, user.id));
+        }
+      } catch (e) {
+        console.error('Error al verificar códigos de respaldo:', e);
+      }
+    }
+
+    if (!isValid) {
+      throw new Error('Código de autenticación incorrecto o expirado.');
+    }
+
+    return this.completeLoginSession(user);
+  }
+
+  /**
+   * Resetear 2FA por parte de un Administrador (desde gestión de usuarios)
+   */
+  async adminReset2FA(targetUserId: number): Promise<void> {
+    await db
+      .update(usuarios)
+      .set({
+        two_factor_enabled: false,
+        two_factor_secret: null,
+        two_factor_temp_secret: null,
+        two_factor_backup_codes: null,
+        updated_at: sql`CURRENT_TIMESTAMP` as any,
+      })
+      .where(eq(usuarios.id, targetUserId));
+  }
+
+  /**
+   * Completar sesión de login y emitir tokens JWT
+   */
+  private async completeLoginSession(user: any, backupCodes?: string[]): Promise<LoginResponse> {
     const userSedes = await this.getUserSedes(user.id);
     const userPermisos = await this.getUserPermisos(user.rol_id);
 
-    // Generar tokens
     const accessToken = this.generateAccessToken({
       userId: user.id,
       username: user.username,
@@ -87,7 +317,6 @@ export class AuthService {
       rolId: user.rol_id,
     });
 
-    // Guardar refresh token en BD
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
 
@@ -103,17 +332,23 @@ export class AuthService {
       password_hash: _,
       refresh_token: __,
       refresh_token_expires_at: ___,
+      two_factor_secret: ____,
+      two_factor_temp_secret: _____,
+      two_factor_backup_codes: ______,
       ...userWithoutSensitiveData
     } = user;
 
     return {
+      requires2FA: false,
       user: {
         ...userWithoutSensitiveData,
+        two_factor_enabled: true,
         sedes: userSedes,
         permisos: userPermisos,
       } as any,
       accessToken,
       refreshToken,
+      ...(backupCodes ? { backupCodes } : {}),
     };
   }
 
@@ -351,6 +586,7 @@ export class AuthService {
         rol_id: usuarios.rol_id,
         personal_id: usuarios.personal_id,
         activo: usuarios.activo,
+        two_factor_enabled: sql<boolean>`COALESCE(${usuarios.two_factor_enabled}, false)`,
         created_at: usuarios.created_at,
         updated_at: usuarios.updated_at,
         nombres: sql<string>`COALESCE(${personal.nombres}, ${usuarios.username})`,
@@ -387,6 +623,7 @@ export class AuthService {
         rol_id: usuarios.rol_id,
         personal_id: usuarios.personal_id,
         activo: usuarios.activo,
+        two_factor_enabled: sql<boolean>`COALESCE(${usuarios.two_factor_enabled}, false)`,
         created_at: usuarios.created_at,
         updated_at: usuarios.updated_at,
         nombres: sql<string>`COALESCE(${personal.nombres}, ${usuarios.username})`,

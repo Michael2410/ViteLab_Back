@@ -32,6 +32,9 @@ const authController = new AuthController();
  *         description: Credenciales inválidas
  */
 router.post('/login', authController.login);
+router.post('/2fa/verify', authController.verify2FA);
+router.post('/2fa/confirm-setup', authController.confirm2FASetup);
+router.post('/2fa/admin-reset/:userId', authenticateToken, authController.adminReset2FA);
 
 /**
  * @swagger

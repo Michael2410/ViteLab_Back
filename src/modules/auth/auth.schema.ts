@@ -37,8 +37,22 @@ export const updateUserSchema = z.object({
   sede_ids: z.array(z.number().int().positive()).optional(),
 });
 
+// Schema para verificar 2FA
+export const verify2FASchema = z.object({
+  tempToken: z.string().min(1, 'El token temporal es requerido'),
+  code: z.string().min(4, 'El código es requerido').max(20),
+});
+
+// Schema para confirmar vinculación 2FA inicial
+export const confirm2FASetupSchema = z.object({
+  tempToken: z.string().min(1, 'El token temporal es requerido'),
+  code: z.string().min(6, 'El código de 6 dígitos es requerido').max(8),
+});
+
 // Tipos inferidos de los schemas
 export type LoginInput = z.infer<typeof loginSchema>;
 export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>;
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
+export type Verify2FAInput = z.infer<typeof verify2FASchema>;
+export type Confirm2FASetupInput = z.infer<typeof confirm2FASetupSchema>;
