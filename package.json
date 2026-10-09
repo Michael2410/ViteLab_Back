@@ -54,6 +54,7 @@
     "puppeteer": "^24.33.0",
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.4",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "typescript": "^5.9.3",
@@ -61,7 +62,6 @@
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.11",
-    "socket.io-client": "^4.8.4",
     "ts-node-dev": "^2.0.0"
   }
 }
