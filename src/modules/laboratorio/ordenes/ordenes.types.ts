@@ -69,6 +69,7 @@ export interface Orden {
   nota?: string;
   total?: number;
   condiciones_preanaliticas?: string | null;
+  metodo_pago?: string;
   usuario_registro_id: number;
   usuario_aprobacion_id?: number;
   created_at: Date;
@@ -88,6 +89,7 @@ export interface CreateOrdenInput {
   tipo_cliente_id: number;
   convenio_id?: number;
   medico?: string;
+  metodo_pago?: string;
   analisis: Array<{
     id: number;
     muestras_ids?: number[];
@@ -102,6 +104,7 @@ export interface UpdateOrdenInput {
   tipo_cliente_id?: number;
   convenio_id?: number;
   medico?: string;
+  metodo_pago?: string;
   analisis?: Array<{
     id: number;
     muestras_ids?: number[];
@@ -184,7 +187,9 @@ export interface OrdenDetalle extends Orden {
 // FILTROS
 export interface OrdenFilters {
   estado?: EstadoOrden;
+  estados?: EstadoOrden[];
   sede_id?: number;
+  sedes_filtro?: number[];
   sede_ids?: number[]; // Para filtrar por múltiples sedes (del usuario)
   fecha_desde?: Date;
   fecha_hasta?: Date;

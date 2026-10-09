@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { zMultiNumber, zMultiString } from '../shared/almacen.filters';
 
 const id = z.coerce.number().int().positive('ID inválido');
 
@@ -6,6 +7,7 @@ export const ingresoIdSchema = z.object({ params: z.object({ id }) });
 
 const lineaIngresoSchema = z.object({
   producto_id: z.number().int().positive('El producto es requerido'),
+  orden_compra_detalle_id: z.number().int().positive().nullable().optional(),
   numero_lote: z.string().trim().max(100).nullable().optional(),
   marca: z.string().trim().max(100).nullable().optional(),
   fecha_vencimiento: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato fecha YYYY-MM-DD').nullable().optional(),
@@ -19,6 +21,7 @@ export const crearIngresoSchema = z.object({
   body: z.object({
     almacen_id: z.number().int().positive('El almacén es requerido'),
     proveedor_id: z.number().int().positive().nullable().optional(),
+    orden_compra_id: z.number().int().positive().nullable().optional(),
     tipo_documento: z.enum([
       'FACTURA',
       'BOLETA',
@@ -46,9 +49,9 @@ export const anularIngresoSchema = z.object({
 
 export const listarIngresosSchema = z.object({
   query: z.object({
-    almacen_id: z.coerce.number().int().positive().optional(),
-    proveedor_id: z.coerce.number().int().positive().optional(),
-    estado: z.enum(['REGISTRADO', 'ANULADO']).optional(),
+    almacen_id: zMultiNumber(),
+    proveedor_id: zMultiNumber(),
+    estado: zMultiString(),
     search: z.string().trim().optional(),
     fecha_desde: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     fecha_hasta: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),

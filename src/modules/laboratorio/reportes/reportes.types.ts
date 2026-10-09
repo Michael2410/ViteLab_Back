@@ -6,7 +6,9 @@ export interface FiltrosReporte {
   sede_id?: number;
   sede_ids?: number[];
   estado?: string;
+  metodo_pago?: string;
   usuario_id?: number;
+  usuario_registro_id?: number;
 }
 
 // Reporte de Órdenes por Período
@@ -23,6 +25,14 @@ export interface OrdenReporte {
   convenio_nombre: string | null;
   total_analisis: number;
   monto_total: number;
+  metodo_pago: string;
+  usuario_nombre?: string;
+}
+
+export interface MetodoPagoTotales {
+  metodo: string;
+  cantidad: number;
+  monto: number;
 }
 
 export interface ReporteOrdenesPeriodo {
@@ -32,6 +42,7 @@ export interface ReporteOrdenesPeriodo {
     monto_total: number;
     por_estado: { estado: string; cantidad: number }[];
     por_tipo_paciente: { tipo: string; cantidad: number }[];
+    por_metodo_pago: MetodoPagoTotales[];
   };
 }
 
@@ -83,4 +94,40 @@ export interface ReporteProductividad {
     resultados_ingresados: number;
     ordenes_aprobadas: number;
   };
+}
+
+// Reporte de Cuadre de Caja Diaria
+export interface FiltrosCuadreCaja {
+  fecha?: string;
+  sede_id?: number;
+  sede_ids?: number[];
+  usuario_id?: number;
+}
+
+export interface PagoCuadreDetalle {
+  id: number;
+  numero_atencion: string;
+  fecha_hora: string;
+  paciente_nombre: string;
+  paciente_dni: string;
+  sede_nombre: string;
+  usuario_registro_nombre: string;
+  metodo_pago: string;
+  total_analisis: number;
+  monto: number;
+}
+
+export interface ReporteCuadreCaja {
+  fecha: string;
+  sede_id?: number;
+  usuario_id?: number;
+  totales: {
+    total_efectivo: number;
+    total_digital: number;
+    total_recaudado: number;
+    cantidad_ordenes: number;
+    ticket_promedio: number;
+  };
+  desglose_metodos: MetodoPagoTotales[];
+  ordenes: PagoCuadreDetalle[];
 }

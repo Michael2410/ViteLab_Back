@@ -11,6 +11,7 @@ export interface ItemConsumoDetalle {
   producto_nombre: string;
   unidad_medida_codigo: string;
   numero_lote: string | null;
+  marca?: string | null;
   fecha_vencimiento: string | null;
   almacen_nombre?: string;
 }
@@ -51,6 +52,8 @@ export interface ItemDevolucionDetalle {
   producto_nombre: string;
   unidad_medida_codigo: string;
   numero_lote: string | null;
+  marca?: string | null;
+  fecha_vencimiento: string | null;
 }
 
 export interface AlmacenDevolucionCompleta {

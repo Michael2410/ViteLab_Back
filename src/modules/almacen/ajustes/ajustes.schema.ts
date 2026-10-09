@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { zMultiNumber, zMultiString } from '../shared/almacen.filters';
 
 const id = z.coerce.number().int().positive('ID inválido');
 
@@ -38,9 +39,9 @@ export const listarAjustesSchema = z.object({
   query: z.object({
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(500).default(10),
-    almacen_id: z.coerce.number().int().positive().optional(),
-    tipo: z.enum(['CONTEO_FISICO', 'MERMA', 'BAJA', 'REGULARIZACION']).optional(),
-    estado: z.enum(['PENDIENTE', 'APROBADO', 'RECHAZADO']).optional(),
+    almacen_id: zMultiNumber(),
+    tipo: zMultiString(),
+    estado: zMultiString(),
     fecha_desde: z.string().optional(),
     fecha_hasta: z.string().optional(),
     search: z.string().optional(),

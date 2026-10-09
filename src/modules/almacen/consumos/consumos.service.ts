@@ -185,6 +185,7 @@ export class AlmacenConsumosService {
         producto_nombre: almacenProductos.nombre,
         unidad_medida_codigo: almacenUnidadesMedida.codigo,
         numero_lote: almacenLotes.numero_lote,
+        marca: almacenLotes.marca,
         fecha_vencimiento: almacenLotes.fecha_vencimiento,
         almacen_nombre: almacenAlmacenes.nombre,
       })
@@ -274,7 +275,7 @@ export class AlmacenConsumosService {
           personal_id: personalId,
           producto_id: item.producto_id,
           lote_id: item.lote_id,
-          cantidad: -item.cantidad,
+          cantidad: item.cantidad,
           documento_tipo: 'CONSUMO',
           documento_id: consumo.id,
           observacion: item.observacion || data.observaciones,
@@ -299,34 +300,72 @@ export class AlmacenConsumosService {
     await db.transaction(async (tx) => {
       // Revertir consumos al stock_custodia
       for (const item of actual.items || []) {
-        await tx
-          .update(almacenStockCustodia)
-          .set({
-            cantidad: sql`${almacenStockCustodia.cantidad} + ${item.cantidad}`,
-            updated_at: sql`CURRENT_TIMESTAMP`,
-          })
+        const [custodiaExistente] = await tx
+          .select({ id: almacenStockCustodia.id })
+          .from(almacenStockCustodia)
           .where(
             and(
               eq(almacenStockCustodia.personal_id, actual.personal_id),
               eq(almacenStockCustodia.almacen_origen_id, item.almacen_origen_id),
               eq(almacenStockCustodia.lote_id, item.lote_id)
             )
-          );
+          )
+          .limit(1);
 
-        // Movimiento en kardex
-        await tx.insert(almacenMovimientos).values({
-          tipo: 'ANULACION',
-          sede_id: actual.sede_id,
-          almacen_id: item.almacen_origen_id,
-          personal_id: actual.personal_id,
-          producto_id: item.producto_id,
-          lote_id: item.lote_id,
-          cantidad: item.cantidad,
-          documento_tipo: 'CONSUMO',
-          documento_id: actual.id,
-          observacion: `Anulación: ${data.motivo}`,
-          usuario_id: usuarioId,
-        });
+        if (custodiaExistente) {
+          await tx
+            .update(almacenStockCustodia)
+            .set({
+              cantidad: sql`${almacenStockCustodia.cantidad} + ${item.cantidad}`,
+              updated_at: sql`CURRENT_TIMESTAMP`,
+            })
+            .where(eq(almacenStockCustodia.id, custodiaExistente.id));
+        } else {
+          await tx.insert(almacenStockCustodia).values({
+            personal_id: actual.personal_id,
+            almacen_origen_id: item.almacen_origen_id,
+            producto_id: item.producto_id,
+            lote_id: item.lote_id,
+            cantidad: item.cantidad,
+          });
+        }
+
+        // Buscar movimiento original en kardex para enlazar la anulación
+        const [movOriginal] = await tx
+          .select({
+            id: almacenMovimientos.id,
+            sede_id: almacenMovimientos.sede_id,
+            almacen_id: almacenMovimientos.almacen_id,
+            personal_id: almacenMovimientos.personal_id,
+            cantidad: almacenMovimientos.cantidad,
+          })
+          .from(almacenMovimientos)
+          .where(
+            and(
+              eq(almacenMovimientos.documento_tipo, 'CONSUMO'),
+              eq(almacenMovimientos.documento_id, actual.id),
+              eq(almacenMovimientos.producto_id, item.producto_id),
+              eq(almacenMovimientos.lote_id, item.lote_id)
+            )
+          )
+          .limit(1);
+
+        if (movOriginal) {
+          await tx.insert(almacenMovimientos).values({
+            tipo: 'ANULACION',
+            sede_id: movOriginal.sede_id,
+            almacen_id: movOriginal.almacen_id,
+            personal_id: movOriginal.personal_id,
+            producto_id: item.producto_id,
+            lote_id: item.lote_id,
+            cantidad: movOriginal.cantidad,
+            documento_tipo: 'CONSUMO',
+            documento_id: actual.id,
+            anula_movimiento_id: movOriginal.id,
+            observacion: `Anulación: ${data.motivo.trim()}`,
+            usuario_id: usuarioId,
+          });
+        }
       }
 
       await tx
@@ -479,6 +518,8 @@ export class AlmacenConsumosService {
         producto_nombre: almacenProductos.nombre,
         unidad_medida_codigo: almacenUnidadesMedida.codigo,
         numero_lote: almacenLotes.numero_lote,
+        marca: almacenLotes.marca,
+        fecha_vencimiento: almacenLotes.fecha_vencimiento,
       })
       .from(almacenDevolucionDetalle)
       .innerJoin(almacenProductos, eq(almacenDevolucionDetalle.producto_id, almacenProductos.id))
@@ -605,19 +646,35 @@ export class AlmacenConsumosService {
     await db.transaction(async (tx) => {
       for (const item of actual.items || []) {
         // Regresar a custodia
-        await tx
-          .update(almacenStockCustodia)
-          .set({
-            cantidad: sql`${almacenStockCustodia.cantidad} + ${item.cantidad}`,
-            updated_at: sql`CURRENT_TIMESTAMP`,
-          })
+        const [custodiaExistente] = await tx
+          .select({ id: almacenStockCustodia.id })
+          .from(almacenStockCustodia)
           .where(
             and(
               eq(almacenStockCustodia.personal_id, actual.personal_id),
               eq(almacenStockCustodia.almacen_origen_id, actual.almacen_id),
               eq(almacenStockCustodia.lote_id, item.lote_id)
             )
-          );
+          )
+          .limit(1);
+
+        if (custodiaExistente) {
+          await tx
+            .update(almacenStockCustodia)
+            .set({
+              cantidad: sql`${almacenStockCustodia.cantidad} + ${item.cantidad}`,
+              updated_at: sql`CURRENT_TIMESTAMP`,
+            })
+            .where(eq(almacenStockCustodia.id, custodiaExistente.id));
+        } else {
+          await tx.insert(almacenStockCustodia).values({
+            personal_id: actual.personal_id,
+            almacen_origen_id: actual.almacen_id,
+            producto_id: item.producto_id,
+            lote_id: item.lote_id,
+            cantidad: item.cantidad,
+          });
+        }
 
         // Descontar del almacén físico
         await tx
@@ -628,20 +685,42 @@ export class AlmacenConsumosService {
           })
           .where(and(eq(almacenStock.almacen_id, actual.almacen_id), eq(almacenStock.lote_id, item.lote_id)));
 
-        // Kardex
-        await tx.insert(almacenMovimientos).values({
-          tipo: 'ANULACION',
-          sede_id: actual.sede_id,
-          almacen_id: actual.almacen_id,
-          personal_id: actual.personal_id,
-          producto_id: item.producto_id,
-          lote_id: item.lote_id,
-          cantidad: -item.cantidad,
-          documento_tipo: 'DEVOLUCION',
-          documento_id: actual.id,
-          observacion: `Anulación: ${data.motivo}`,
-          usuario_id: usuarioId,
-        });
+        // Buscar movimiento original de devolución en kardex
+        const [movOriginal] = await tx
+          .select({
+            id: almacenMovimientos.id,
+            sede_id: almacenMovimientos.sede_id,
+            almacen_id: almacenMovimientos.almacen_id,
+            personal_id: almacenMovimientos.personal_id,
+            cantidad: almacenMovimientos.cantidad,
+          })
+          .from(almacenMovimientos)
+          .where(
+            and(
+              eq(almacenMovimientos.documento_tipo, 'DEVOLUCION'),
+              eq(almacenMovimientos.documento_id, actual.id),
+              eq(almacenMovimientos.producto_id, item.producto_id),
+              eq(almacenMovimientos.lote_id, item.lote_id)
+            )
+          )
+          .limit(1);
+
+        if (movOriginal) {
+          await tx.insert(almacenMovimientos).values({
+            tipo: 'ANULACION',
+            sede_id: movOriginal.sede_id,
+            almacen_id: movOriginal.almacen_id,
+            personal_id: movOriginal.personal_id,
+            producto_id: item.producto_id,
+            lote_id: item.lote_id,
+            cantidad: movOriginal.cantidad,
+            documento_tipo: 'DEVOLUCION',
+            documento_id: actual.id,
+            anula_movimiento_id: movOriginal.id,
+            observacion: `Anulación: ${data.motivo.trim()}`,
+            usuario_id: usuarioId,
+          });
+        }
       }
 
       await tx

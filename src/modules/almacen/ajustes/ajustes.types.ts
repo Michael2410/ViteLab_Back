@@ -13,6 +13,7 @@ export interface ItemAjusteDetalle {
   unidad_medida_codigo: string;
   unidad_medida_nombre: string;
   numero_lote: string | null;
+  marca?: string | null;
   fecha_vencimiento: string | null;
 }
 

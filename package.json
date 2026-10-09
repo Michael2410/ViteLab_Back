@@ -7,7 +7,14 @@
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "db:migrate:master": "tsx src/scripts/migrate-master.ts",
+    "db:migrate:tenants": "tsx src/scripts/migrate-tenants.ts",
+    "db:migrate:status": "tsx src/scripts/migrate-tenants.ts --status",
+    "db:provision:tenant": "tsx src/scripts/provision-tenant.ts",
+    "db:backup:tenant": "tsx src/scripts/backup-tenant.ts",
+    "test:phase5": "tsx src/scripts/test-phase5-multitenant-flow.ts",
+    "test:phase6": "tsx src/scripts/test-phase6-hardening.ts"
   },
   "keywords": [
     "lab",
@@ -54,6 +61,7 @@
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.11",
+    "socket.io-client": "^4.8.4",
     "ts-node-dev": "^2.0.0"
   }
 }

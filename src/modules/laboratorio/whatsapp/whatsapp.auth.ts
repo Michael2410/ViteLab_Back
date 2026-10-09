@@ -11,69 +11,88 @@ import {
   BufferJSON,
 } from '@whiskeysockets/baileys';
 import { eq, and, sql } from 'drizzle-orm';
-import { db, whatsappSessions, whatsappConnectionStatus, whatsappMessagesLog } from '../../../db';
+import { db, whatsappSessions, whatsappConnectionStatus, whatsappMessagesLog, tenantStorage, runInTenant } from '../../../db';
 
 const SESSION_ID = 'default';
+
+/**
+ * Asegura que las operaciones asíncronas de Baileys se ejecuten
+ * dentro del contexto del tenant correspondiente sin violar Fail-Closed.
+ */
+const runWithTenantContext = async <T>(fn: () => Promise<T>): Promise<T> => {
+  if (tenantStorage.getStore()) {
+    return fn();
+  }
+  return runInTenant('vitelab_central', { kind: 'system', job: 'whatsapp:auth' }, fn);
+};
 
 /**
  * Guarda un valor en la BD
  */
 const saveData = async (key: string, value: unknown): Promise<void> => {
-  const serialized = JSON.stringify(value, BufferJSON.replacer);
+  return runWithTenantContext(async () => {
+    const serialized = JSON.stringify(value, BufferJSON.replacer);
 
-  await db
-    .insert(whatsappSessions)
-    .values({
-      session_id: SESSION_ID,
-      data_key: key,
-      data_value: serialized,
-    })
-    .onConflictDoUpdate({
-      target: [whatsappSessions.data_key, whatsappSessions.session_id],
-      set: {
+    await db
+      .insert(whatsappSessions)
+      .values({
+        session_id: SESSION_ID,
+        data_key: key,
         data_value: serialized,
-        updated_at: sql`CURRENT_TIMESTAMP` as any,
-      },
-    });
+      })
+      .onConflictDoUpdate({
+        target: [whatsappSessions.data_key, whatsappSessions.session_id],
+        set: {
+          data_value: serialized,
+          updated_at: sql`CURRENT_TIMESTAMP` as any,
+        },
+      });
+  });
 };
 
 /**
  * Obtiene un valor de la BD
  */
 const getData = async <T>(key: string): Promise<T | null> => {
-  const [row] = await db
-    .select({ data_value: whatsappSessions.data_value })
-    .from(whatsappSessions)
-    .where(and(eq(whatsappSessions.session_id, SESSION_ID), eq(whatsappSessions.data_key, key)));
+  return runWithTenantContext(async () => {
+    const [row] = await db
+      .select({ data_value: whatsappSessions.data_value })
+      .from(whatsappSessions)
+      .where(and(eq(whatsappSessions.session_id, SESSION_ID), eq(whatsappSessions.data_key, key)));
 
-  if (!row || !row.data_value) {
-    return null;
-  }
+    if (!row || !row.data_value) {
+      return null;
+    }
 
-  return JSON.parse(row.data_value, BufferJSON.reviver);
+    return JSON.parse(row.data_value, BufferJSON.reviver);
+  });
 };
 
 /**
  * Elimina un valor de la BD
  */
 const removeData = async (key: string): Promise<void> => {
-  await db
-    .delete(whatsappSessions)
-    .where(and(eq(whatsappSessions.session_id, SESSION_ID), eq(whatsappSessions.data_key, key)));
+  return runWithTenantContext(async () => {
+    await db
+      .delete(whatsappSessions)
+      .where(and(eq(whatsappSessions.session_id, SESSION_ID), eq(whatsappSessions.data_key, key)));
+  });
 };
 
 /**
  * Elimina múltiples valores que coincidan con un patrón
  */
 export const removeDataByPrefix = async (prefix: string): Promise<void> => {
-  await db
-    .delete(whatsappSessions)
-    .where(
-      and(
-        eq(whatsappSessions.session_id, SESSION_ID),
-        sql`${whatsappSessions.data_key} LIKE ${`${prefix}%`}`
-      )
-    );
+  return runWithTenantContext(async () => {
+    await db
+      .delete(whatsappSessions)
+      .where(
+        and(
+          eq(whatsappSessions.session_id, SESSION_ID),
+          sql`${whatsappSessions.data_key} LIKE ${`${prefix}%`}`
+        )
+      );
+  });
 };
 
 /**
@@ -132,7 +151,9 @@ export const useBaileysAuthStateDB = async (): Promise<{
       await saveData('creds', creds);
     },
     clearState: async (): Promise<void> => {
-      await db.delete(whatsappSessions).where(eq(whatsappSessions.session_id, SESSION_ID));
+      return runWithTenantContext(async () => {
+        await db.delete(whatsappSessions).where(eq(whatsappSessions.session_id, SESSION_ID));
+      });
     },
   };
 };
@@ -144,31 +165,33 @@ export const updateConnectionStatus = async (
   isConnected: boolean,
   phoneNumber?: string
 ): Promise<void> => {
-  const now = new Date().toISOString();
+  return runWithTenantContext(async () => {
+    const now = new Date().toISOString();
 
-  await db
-    .insert(whatsappConnectionStatus)
-    .values({
-      session_id: SESSION_ID,
-      is_connected: isConnected,
-      phone_number: phoneNumber || null,
-      last_connected_at: isConnected ? (now as any) : null,
-      last_disconnected_at: !isConnected ? (now as any) : null,
-    })
-    .onConflictDoUpdate({
-      target: whatsappConnectionStatus.session_id,
-      set: {
+    await db
+      .insert(whatsappConnectionStatus)
+      .values({
+        session_id: SESSION_ID,
         is_connected: isConnected,
-        phone_number: phoneNumber ? phoneNumber : sql`whatsapp_connection_status.phone_number`,
-        last_connected_at: isConnected
-          ? (now as any)
-          : sql`whatsapp_connection_status.last_connected_at`,
-        last_disconnected_at: !isConnected
-          ? (now as any)
-          : sql`whatsapp_connection_status.last_disconnected_at`,
-        updated_at: sql`CURRENT_TIMESTAMP` as any,
-      },
-    });
+        phone_number: phoneNumber || null,
+        last_connected_at: isConnected ? (now as any) : null,
+        last_disconnected_at: !isConnected ? (now as any) : null,
+      })
+      .onConflictDoUpdate({
+        target: whatsappConnectionStatus.session_id,
+        set: {
+          is_connected: isConnected,
+          phone_number: phoneNumber ? phoneNumber : sql`whatsapp_connection_status.phone_number`,
+          last_connected_at: isConnected
+            ? (now as any)
+            : sql`whatsapp_connection_status.last_connected_at`,
+          last_disconnected_at: !isConnected
+            ? (now as any)
+            : sql`whatsapp_connection_status.last_disconnected_at`,
+          updated_at: sql`CURRENT_TIMESTAMP` as any,
+        },
+      });
+  });
 };
 
 /**
@@ -179,20 +202,22 @@ export const getConnectionStatus = async (): Promise<{
   phoneNumber: string | null;
   lastConnectedAt: Date | null;
 }> => {
-  const [row] = await db
-    .select()
-    .from(whatsappConnectionStatus)
-    .where(eq(whatsappConnectionStatus.session_id, SESSION_ID));
+  return runWithTenantContext(async () => {
+    const [row] = await db
+      .select()
+      .from(whatsappConnectionStatus)
+      .where(eq(whatsappConnectionStatus.session_id, SESSION_ID));
 
-  if (!row) {
-    return { isConnected: false, phoneNumber: null, lastConnectedAt: null };
-  }
+    if (!row) {
+      return { isConnected: false, phoneNumber: null, lastConnectedAt: null };
+    }
 
-  return {
-    isConnected: Boolean(row.is_connected),
-    phoneNumber: row.phone_number,
-    lastConnectedAt: row.last_connected_at ? new Date(row.last_connected_at) : null,
-  };
+    return {
+      isConnected: Boolean(row.is_connected),
+      phoneNumber: row.phone_number,
+      lastConnectedAt: row.last_connected_at ? new Date(row.last_connected_at) : null,
+    };
+  });
 };
 
 /**
@@ -205,19 +230,21 @@ export const logMessage = async (
   sentBy: number,
   errorMessage?: string
 ): Promise<number> => {
-  const [row] = await db
-    .insert(whatsappMessagesLog)
-    .values({
-      orden_id: ordenId || null,
-      phone_number: phoneNumber,
-      message_type: 'document',
-      status,
-      error_message: errorMessage || null,
-      sent_by: sentBy,
-    })
-    .returning({ id: whatsappMessagesLog.id });
+  return runWithTenantContext(async () => {
+    const [row] = await db
+      .insert(whatsappMessagesLog)
+      .values({
+        orden_id: ordenId || null,
+        phone_number: phoneNumber,
+        message_type: 'document',
+        status,
+        error_message: errorMessage || null,
+        sent_by: sentBy,
+      })
+      .returning({ id: whatsappMessagesLog.id });
 
-  return row.id;
+    return row.id;
+  });
 };
 
 /**
@@ -228,11 +255,14 @@ export const updateMessageStatus = async (
   status: 'pending' | 'sent' | 'delivered' | 'failed',
   errorMessage?: string
 ): Promise<void> => {
-  await db
-    .update(whatsappMessagesLog)
-    .set({
-      status,
-      error_message: errorMessage || null,
-    })
-    .where(eq(whatsappMessagesLog.id, logId));
+  return runWithTenantContext(async () => {
+    await db
+      .update(whatsappMessagesLog)
+      .set({
+        status,
+        error_message: errorMessage || null,
+      })
+      .where(eq(whatsappMessagesLog.id, logId));
+  });
 };
+

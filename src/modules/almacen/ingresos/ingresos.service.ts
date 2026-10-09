@@ -11,12 +11,15 @@ import {
   almacenUnidadesMedida,
   almacenStock,
   almacenMovimientos,
+  almacenOrdenesCompra,
+  almacenOrdenCompraDetalle,
   usuarios,
   sedes,
 } from '../../../db';
 import { AlmacenError } from '../shared/almacen.errors';
 import { obtenerSiguienteCorrelativo } from '../shared/almacen.correlativo';
 import { resolverOCrearLote } from '../shared/almacen.lotes';
+import { buildMultiFilter } from '../shared/almacen.filters';
 import type { Paginado } from '../shared/almacen.types';
 import type {
   CrearIngresoInput,
@@ -32,9 +35,9 @@ export class AlmacenIngresosService {
   ): Promise<Paginado<AlmacenIngresoCompleto>> {
     const conditions: (SQL | undefined)[] = [];
 
-    if (f.almacen_id) conditions.push(eq(almacenIngresos.almacen_id, f.almacen_id));
-    if (f.proveedor_id) conditions.push(eq(almacenIngresos.proveedor_id, f.proveedor_id));
-    if (f.estado) conditions.push(eq(almacenIngresos.estado, f.estado));
+    if (f.almacen_id) conditions.push(buildMultiFilter(almacenIngresos.almacen_id, f.almacen_id));
+    if (f.proveedor_id) conditions.push(buildMultiFilter(almacenIngresos.proveedor_id, f.proveedor_id));
+    if (f.estado) conditions.push(buildMultiFilter(almacenIngresos.estado, f.estado));
     if (f.fecha_desde) conditions.push(gte(almacenIngresos.fecha_ingreso, f.fecha_desde));
     if (f.fecha_hasta) conditions.push(lte(almacenIngresos.fecha_ingreso, f.fecha_hasta));
 
@@ -71,6 +74,7 @@ export class AlmacenIngresosService {
         numero: almacenIngresos.numero,
         almacen_id: almacenIngresos.almacen_id,
         proveedor_id: almacenIngresos.proveedor_id,
+        orden_compra_id: almacenIngresos.orden_compra_id,
         tipo_documento: almacenIngresos.tipo_documento,
         serie_documento: almacenIngresos.serie_documento,
         numero_documento: almacenIngresos.numero_documento,
@@ -121,6 +125,7 @@ export class AlmacenIngresosService {
         numero: almacenIngresos.numero,
         almacen_id: almacenIngresos.almacen_id,
         proveedor_id: almacenIngresos.proveedor_id,
+        orden_compra_id: almacenIngresos.orden_compra_id,
         tipo_documento: almacenIngresos.tipo_documento,
         serie_documento: almacenIngresos.serie_documento,
         numero_documento: almacenIngresos.numero_documento,
@@ -165,6 +170,7 @@ export class AlmacenIngresosService {
         producto_id: almacenIngresoDetalle.producto_id,
         lote_id: almacenIngresoDetalle.lote_id,
         ubicacion_id: almacenIngresoDetalle.ubicacion_id,
+        orden_compra_detalle_id: almacenIngresoDetalle.orden_compra_detalle_id,
         cantidad: almacenIngresoDetalle.cantidad,
         costo_unitario: almacenIngresoDetalle.costo_unitario,
         legacy_id: almacenIngresoDetalle.legacy_id,
@@ -176,6 +182,7 @@ export class AlmacenIngresosService {
         marca: almacenLotes.marca,
         fecha_vencimiento: almacenLotes.fecha_vencimiento,
         ubicacion_codigo: almacenUbicaciones.codigo,
+        ubicacion_nombre: almacenUbicaciones.nombre,
       })
       .from(almacenIngresoDetalle)
       .innerJoin(almacenProductos, eq(almacenIngresoDetalle.producto_id, almacenProductos.id))
@@ -217,6 +224,7 @@ export class AlmacenIngresosService {
           numero,
           almacen_id: data.almacen_id,
           proveedor_id: data.proveedor_id ?? null,
+          orden_compra_id: data.orden_compra_id ?? null,
           tipo_documento: data.tipo_documento,
           serie_documento: data.serie_documento?.trim() || null,
           numero_documento: data.numero_documento?.trim() || null,
@@ -250,10 +258,21 @@ export class AlmacenIngresosService {
             producto_id: l.producto_id,
             lote_id: l.loteId,
             ubicacion_id: l.ubicacion_id ?? null,
+            orden_compra_detalle_id: l.orden_compra_detalle_id ?? null,
             cantidad: l.cantidad,
             costo_unitario: l.costo_unitario,
           })
           .returning();
+
+        // 4.1 Si viene de una Orden de Compra, sumar a la cantidad recibida
+        if (l.orden_compra_detalle_id) {
+          await tx
+            .update(almacenOrdenCompraDetalle)
+            .set({
+              cantidad_recibida: sql`${almacenOrdenCompraDetalle.cantidad_recibida} + ${l.cantidad}`,
+            })
+            .where(eq(almacenOrdenCompraDetalle.id, l.orden_compra_detalle_id));
+        }
 
         // 5. Upsert de saldo en almacen.stock
         await tx
@@ -262,12 +281,14 @@ export class AlmacenIngresosService {
             almacen_id: data.almacen_id,
             producto_id: l.producto_id,
             lote_id: l.loteId,
+            ubicacion_id: l.ubicacion_id ?? null,
             cantidad: l.cantidad,
           })
           .onConflictDoUpdate({
             target: [almacenStock.almacen_id, almacenStock.lote_id],
             set: {
               cantidad: sql`${almacenStock.cantidad} + ${l.cantidad}`,
+              ubicacion_id: sql`COALESCE(${l.ubicacion_id ?? null}, ${almacenStock.ubicacion_id})`,
               updated_at: sql`CURRENT_TIMESTAMP`,
             },
           });
@@ -279,6 +300,7 @@ export class AlmacenIngresosService {
           almacen_id: data.almacen_id,
           producto_id: l.producto_id,
           lote_id: l.loteId,
+          ubicacion_id: l.ubicacion_id ?? null,
           cantidad: l.cantidad,
           costo_unitario: l.costo_unitario,
           documento_tipo: 'INGRESO',
@@ -286,6 +308,29 @@ export class AlmacenIngresosService {
           documento_detalle_id: det.id,
           usuario_id: usuarioId,
         });
+      }
+
+      // 7. Si está vinculado a una Orden de Compra, actualizar el estado de la OC
+      if (data.orden_compra_id) {
+        const ocItems = await tx
+          .select({
+            solicitada: almacenOrdenCompraDetalle.cantidad_solicitada,
+            recibida: almacenOrdenCompraDetalle.cantidad_recibida,
+          })
+          .from(almacenOrdenCompraDetalle)
+          .where(eq(almacenOrdenCompraDetalle.orden_compra_id, data.orden_compra_id));
+
+        const allCompleted = ocItems.length > 0 && ocItems.every((it) => Number(it.recibida) >= Number(it.solicitada));
+        const anyReceived = ocItems.some((it) => Number(it.recibida) > 0);
+        const nuevoEstado = allCompleted ? 'RECEPCIONADA' : anyReceived ? 'PARCIAL' : 'PENDIENTE';
+
+        await tx
+          .update(almacenOrdenesCompra)
+          .set({
+            estado: nuevoEstado,
+            updated_at: sql`CURRENT_TIMESTAMP`,
+          })
+          .where(eq(almacenOrdenesCompra.id, data.orden_compra_id));
       }
 
       return ingreso;
@@ -364,6 +409,16 @@ export class AlmacenIngresosService {
           observacion: `Anulación: ${data.motivo.trim()}`,
           usuario_id: usuarioId,
         });
+
+        // Revertir cantidad_recibida si provenía de una Orden de Compra
+        if (item.orden_compra_detalle_id) {
+          await tx
+            .update(almacenOrdenCompraDetalle)
+            .set({
+              cantidad_recibida: sql`GREATEST(0, ${almacenOrdenCompraDetalle.cantidad_recibida} - ${item.cantidad})`,
+            })
+            .where(eq(almacenOrdenCompraDetalle.id, item.orden_compra_detalle_id));
+        }
       }
 
       // 2. Marcar ingreso como ANULADO
@@ -377,6 +432,29 @@ export class AlmacenIngresosService {
           updated_at: sql`CURRENT_TIMESTAMP`,
         })
         .where(eq(almacenIngresos.id, id));
+
+      // 3. Re-evaluar estado de la Orden de Compra si existía
+      if (actual.orden_compra_id) {
+        const ocItems = await tx
+          .select({
+            solicitada: almacenOrdenCompraDetalle.cantidad_solicitada,
+            recibida: almacenOrdenCompraDetalle.cantidad_recibida,
+          })
+          .from(almacenOrdenCompraDetalle)
+          .where(eq(almacenOrdenCompraDetalle.orden_compra_id, actual.orden_compra_id));
+
+        const allCompleted = ocItems.length > 0 && ocItems.every((it) => Number(it.recibida) >= Number(it.solicitada));
+        const anyReceived = ocItems.some((it) => Number(it.recibida) > 0);
+        const nuevoEstado = allCompleted ? 'RECEPCIONADA' : anyReceived ? 'PARCIAL' : 'PENDIENTE';
+
+        await tx
+          .update(almacenOrdenesCompra)
+          .set({
+            estado: nuevoEstado,
+            updated_at: sql`CURRENT_TIMESTAMP`,
+          })
+          .where(eq(almacenOrdenesCompra.id, actual.orden_compra_id));
+      }
     });
 
     return this.obtener(id, sedesPermitidas);

@@ -13,6 +13,7 @@ import {
   sedes,
 } from '../../../db';
 import { AlmacenError } from '../shared/almacen.errors';
+import { buildMultiFilter } from '../shared/almacen.filters';
 import { obtenerSiguienteCorrelativo } from '../shared/almacen.correlativo';
 import type { Paginado } from '../shared/almacen.types';
 import type {
@@ -30,17 +31,24 @@ export class AlmacenTransferenciasService {
   ): Promise<Paginado<AlmacenTransferenciaCompleta>> {
     const conditions: (SQL | undefined)[] = [];
 
-    if (f.almacen_origen_id) conditions.push(eq(almacenTransferencias.almacen_origen_id, f.almacen_origen_id));
-    if (f.almacen_destino_id) conditions.push(eq(almacenTransferencias.almacen_destino_id, f.almacen_destino_id));
-    if (f.almacen_id) {
+    const cOrigen = buildMultiFilter(almacenTransferencias.almacen_origen_id, f.almacen_origen_id);
+    if (cOrigen) conditions.push(cOrigen);
+    const cDestino = buildMultiFilter(almacenTransferencias.almacen_destino_id, f.almacen_destino_id);
+    if (cDestino) conditions.push(cDestino);
+    if (f.almacen_id && f.almacen_id.length > 0) {
       conditions.push(
         or(
-          eq(almacenTransferencias.almacen_origen_id, f.almacen_id),
-          eq(almacenTransferencias.almacen_destino_id, f.almacen_id)
+          f.almacen_id.length === 1
+            ? eq(almacenTransferencias.almacen_origen_id, f.almacen_id[0])
+            : inArray(almacenTransferencias.almacen_origen_id, f.almacen_id),
+          f.almacen_id.length === 1
+            ? eq(almacenTransferencias.almacen_destino_id, f.almacen_id[0])
+            : inArray(almacenTransferencias.almacen_destino_id, f.almacen_id)
         )
       );
     }
-    if (f.estado) conditions.push(eq(almacenTransferencias.estado, f.estado));
+    const cEstado = buildMultiFilter(almacenTransferencias.estado, f.estado);
+    if (cEstado) conditions.push(cEstado);
     if (f.fecha_desde) conditions.push(gte(almacenTransferencias.fecha_envio, `${f.fecha_desde} 00:00:00`));
     if (f.fecha_hasta) conditions.push(lte(almacenTransferencias.fecha_envio, `${f.fecha_hasta} 23:59:59`));
 
@@ -268,7 +276,7 @@ export class AlmacenTransferenciasService {
           almacen_id: data.almacen_origen_id,
           producto_id: item.producto_id,
           lote_id: item.lote_id,
-          cantidad: -item.cantidad_enviada,
+          cantidad: item.cantidad_enviada,
           documento_tipo: 'TRANSFERENCIA',
           documento_id: transferencia.id,
           observacion: `Envío a otro almacén. Transf: ${numero}`,
@@ -408,19 +416,42 @@ export class AlmacenTransferenciasService {
             )
           );
 
-        // Movimiento ANULACION en kardex
-        await tx.insert(almacenMovimientos).values({
-          tipo: 'ANULACION',
-          sede_id: actual.sede_origen_id,
-          almacen_id: actual.almacen_origen_id,
-          producto_id: item.producto_id,
-          lote_id: item.lote_id,
-          cantidad: item.cantidad_enviada,
-          documento_tipo: 'TRANSFERENCIA',
-          documento_id: actual.id,
-          observacion: `Anulación: ${data.motivo}`,
-          usuario_id: usuarioId,
-        });
+        // Buscar movimiento original en kardex para enlazar la anulación
+        const [movOriginal] = await tx
+          .select({
+            id: almacenMovimientos.id,
+            sede_id: almacenMovimientos.sede_id,
+            almacen_id: almacenMovimientos.almacen_id,
+            personal_id: almacenMovimientos.personal_id,
+            cantidad: almacenMovimientos.cantidad,
+          })
+          .from(almacenMovimientos)
+          .where(
+            and(
+              eq(almacenMovimientos.documento_tipo, 'TRANSFERENCIA'),
+              eq(almacenMovimientos.documento_id, actual.id),
+              eq(almacenMovimientos.producto_id, item.producto_id),
+              eq(almacenMovimientos.lote_id, item.lote_id)
+            )
+          )
+          .limit(1);
+
+        if (movOriginal) {
+          await tx.insert(almacenMovimientos).values({
+            tipo: 'ANULACION',
+            sede_id: movOriginal.sede_id,
+            almacen_id: movOriginal.almacen_id,
+            personal_id: movOriginal.personal_id,
+            producto_id: item.producto_id,
+            lote_id: item.lote_id,
+            cantidad: movOriginal.cantidad,
+            documento_tipo: 'TRANSFERENCIA',
+            documento_id: actual.id,
+            anula_movimiento_id: movOriginal.id,
+            observacion: `Anulación: ${data.motivo.trim()}`,
+            usuario_id: usuarioId,
+          });
+        }
       }
 
       await tx

@@ -39,8 +39,15 @@ export class DocumentosController {
 
   generar = asyncHandler(async (req: Request, res: Response) => {
     try {
-      const { personal_id, tipo_documento, destinatario, incluir_remuneracion, observaciones } = req.body;
-      const emitidoPorId = (req as any).user?.id || null;
+      const {
+        personal_id,
+        tipo_documento,
+        destinatario,
+        incluir_remuneracion,
+        observaciones,
+        contenido_personalizado,
+      } = req.body;
+      const emitidoPorId = (req as any).user?.id || (req as any).user?.userId || null;
 
       if (!personal_id || !tipo_documento) {
         return errorResponse(res, 'Faltan campos obligatorios: personal_id, tipo_documento', null, 400);
@@ -53,6 +60,7 @@ export class DocumentosController {
           destinatario,
           incluir_remuneracion: Boolean(incluir_remuneracion),
           observaciones,
+          contenido_personalizado,
         },
         emitidoPorId
       );

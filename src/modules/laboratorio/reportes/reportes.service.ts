@@ -18,6 +18,10 @@ import type {
   ReporteAnalisisRanking,
   ReporteProductividad,
   OrdenReporte,
+  FiltrosCuadreCaja,
+  ReporteCuadreCaja,
+  PagoCuadreDetalle,
+  MetodoPagoTotales,
 } from './reportes.types';
 
 class ReportesService {
@@ -47,6 +51,15 @@ class ReportesService {
       conditions.push(eq(ordenes.estado, filtros.estado));
     }
 
+    if (filtros.metodo_pago) {
+      conditions.push(eq(ordenes.metodo_pago, filtros.metodo_pago));
+    }
+
+    const usuarioFiltro = filtros.usuario_registro_id || filtros.usuario_id;
+    if (usuarioFiltro) {
+      conditions.push(eq(ordenes.usuario_registro_id, usuarioFiltro));
+    }
+
     const rows = await db
       .select({
         id: ordenes.id,
@@ -54,11 +67,13 @@ class ReportesService {
         fecha_registro: sql<string>`${ordenes.fecha_registro}::text`,
         estado: ordenes.estado,
         tipo_paciente: ordenes.tipo_paciente,
+        metodo_pago: sql<string>`COALESCE(${ordenes.metodo_pago}, 'EFECTIVO')`,
         paciente_dni: sql<string>`COALESCE(${pacientes.dni}, '')`,
         paciente_nombres: sql<string>`COALESCE(${pacientes.nombres}, '')`,
         paciente_apellidos: sql<string>`CONCAT(COALESCE(${pacientes.apellido_paterno}, ''), ' ', COALESCE(${pacientes.apellido_materno}, ''))`,
         sede_nombre: sedes.nombre,
         convenio_nombre: convenios.nombre_empresa,
+        usuario_nombre: sql<string>`CONCAT(COALESCE(${personal.nombres}, ${usuarios.username}), ' ', COALESCE(${personal.apellidos}, ''))`,
         total_analisis: sql<number>`(SELECT COUNT(*) FROM orden_analisis WHERE orden_id = ${ordenes.id})::int`,
         monto_total: sql<number>`COALESCE((SELECT SUM(oa.precio) FROM orden_analisis oa WHERE oa.orden_id = ${ordenes.id}), 0)::float`,
       })
@@ -66,6 +81,8 @@ class ReportesService {
       .innerJoin(pacientes, eq(ordenes.paciente_id, pacientes.id))
       .innerJoin(sedes, eq(ordenes.sede_id, sedes.id))
       .leftJoin(convenios, eq(ordenes.convenio_id, convenios.id))
+      .leftJoin(usuarios, eq(ordenes.usuario_registro_id, usuarios.id))
+      .leftJoin(personal, eq(usuarios.personal_id, personal.id))
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(ordenes.fecha_registro));
 
@@ -75,11 +92,13 @@ class ReportesService {
       fecha_registro: r.fecha_registro,
       estado: r.estado,
       tipo_paciente: r.tipo_paciente || 'PARTICULAR',
+      metodo_pago: r.metodo_pago || 'EFECTIVO',
       paciente_dni: r.paciente_dni,
       paciente_nombres: r.paciente_nombres,
       paciente_apellidos: r.paciente_apellidos.trim(),
       sede_nombre: r.sede_nombre,
       convenio_nombre: r.convenio_nombre,
+      usuario_nombre: r.usuario_nombre?.trim() || undefined,
       total_analisis: Number(r.total_analisis) || 0,
       monto_total: Number(r.monto_total) || 0,
     }));
@@ -90,9 +109,117 @@ class ReportesService {
       monto_total: ordenesReporte.reduce((acc, o) => acc + o.monto_total, 0),
       por_estado: this.agruparPor(ordenesReporte, 'estado'),
       por_tipo_paciente: this.agruparPorTipo(ordenesReporte, 'tipo_paciente'),
+      por_metodo_pago: this.agruparPorMetodoPago(ordenesReporte),
     };
 
     return { ordenes: ordenesReporte, totales };
+  }
+
+  /**
+   * Reporte de Cuadre de Caja Diaria (Arqueo por Turno / Colaborador)
+   */
+  async getCuadreCaja(filtros: FiltrosCuadreCaja): Promise<ReporteCuadreCaja> {
+    const conditions = [];
+    const fechaConsulta = filtros.fecha || new Date().toISOString().split('T')[0];
+
+    conditions.push(sql`DATE(${ordenes.fecha_registro}) = ${fechaConsulta}`);
+
+    if (filtros.sede_id) {
+      conditions.push(eq(ordenes.sede_id, filtros.sede_id));
+    }
+
+    if (filtros.sede_ids && filtros.sede_ids.length > 0) {
+      conditions.push(inArray(ordenes.sede_id, filtros.sede_ids));
+    }
+
+    if (filtros.usuario_id) {
+      conditions.push(eq(ordenes.usuario_registro_id, filtros.usuario_id));
+    }
+
+    const rows = await db
+      .select({
+        id: ordenes.id,
+        numero_atencion: ordenes.numero_atencion,
+        fecha_registro: sql<string>`${ordenes.fecha_registro}::text`,
+        metodo_pago: sql<string>`COALESCE(${ordenes.metodo_pago}, 'EFECTIVO')`,
+        paciente_nombres: sql<string>`COALESCE(${pacientes.nombres}, '')`,
+        paciente_apellidos: sql<string>`CONCAT(COALESCE(${pacientes.apellido_paterno}, ''), ' ', COALESCE(${pacientes.apellido_materno}, ''))`,
+        paciente_dni: sql<string>`COALESCE(${pacientes.dni}, '')`,
+        sede_nombre: sedes.nombre,
+        usuario_registro_nombre: sql<string>`CONCAT(COALESCE(${personal.nombres}, ${usuarios.username}), ' ', COALESCE(${personal.apellidos}, ''))`,
+        total_analisis: sql<number>`(SELECT COUNT(*) FROM orden_analisis WHERE orden_id = ${ordenes.id})::int`,
+        monto: sql<number>`COALESCE((SELECT SUM(oa.precio) FROM orden_analisis oa WHERE oa.orden_id = ${ordenes.id}), 0)::float`,
+      })
+      .from(ordenes)
+      .innerJoin(pacientes, eq(ordenes.paciente_id, pacientes.id))
+      .innerJoin(sedes, eq(ordenes.sede_id, sedes.id))
+      .innerJoin(usuarios, eq(ordenes.usuario_registro_id, usuarios.id))
+      .leftJoin(personal, eq(usuarios.personal_id, personal.id))
+      .where(and(...conditions))
+      .orderBy(desc(ordenes.fecha_registro));
+
+    const ordenesCuadre: PagoCuadreDetalle[] = rows.map((r) => ({
+      id: r.id,
+      numero_atencion: String(r.numero_atencion || ''),
+      fecha_hora: r.fecha_registro,
+      paciente_nombre: `${r.paciente_apellidos.trim()}, ${r.paciente_nombres}`.trim(),
+      paciente_dni: r.paciente_dni,
+      sede_nombre: r.sede_nombre,
+      usuario_registro_nombre: r.usuario_registro_nombre.trim(),
+      metodo_pago: r.metodo_pago,
+      total_analisis: Number(r.total_analisis) || 0,
+      monto: Number(r.monto) || 0,
+    }));
+
+    // Métodos estándar
+    const metodosBase = ['EFECTIVO', 'YAPE', 'PLIN', 'TARJETA', 'TRANSFERENCIA'];
+    const mapaMetodos: Record<string, { cantidad: number; monto: number }> = {};
+    for (const m of metodosBase) {
+      mapaMetodos[m] = { cantidad: 0, monto: 0 };
+    }
+
+    let totalEfectivo = 0;
+    let totalDigital = 0;
+    let totalRecaudado = 0;
+
+    for (const o of ordenesCuadre) {
+      const m = o.metodo_pago.toUpperCase();
+      if (!mapaMetodos[m]) {
+        mapaMetodos[m] = { cantidad: 0, monto: 0 };
+      }
+      mapaMetodos[m].cantidad += 1;
+      mapaMetodos[m].monto += o.monto;
+      totalRecaudado += o.monto;
+
+      if (m === 'EFECTIVO') {
+        totalEfectivo += o.monto;
+      } else {
+        totalDigital += o.monto;
+      }
+    }
+
+    const desglose_metodos: MetodoPagoTotales[] = Object.entries(mapaMetodos).map(([metodo, data]) => ({
+      metodo,
+      cantidad: data.cantidad,
+      monto: data.monto,
+    }));
+
+    const cantidad_ordenes = ordenesCuadre.length;
+
+    return {
+      fecha: fechaConsulta,
+      sede_id: filtros.sede_id,
+      usuario_id: filtros.usuario_id,
+      totales: {
+        total_efectivo: totalEfectivo,
+        total_digital: totalDigital,
+        total_recaudado: totalRecaudado,
+        cantidad_ordenes,
+        ticket_promedio: cantidad_ordenes > 0 ? totalRecaudado / cantidad_ordenes : 0,
+      },
+      desglose_metodos,
+      ordenes: ordenesCuadre,
+    };
   }
 
   /**
@@ -124,7 +251,7 @@ class ReportesService {
       .leftJoin(ordenes, eq(sedes.id, ordenes.sede_id))
       .where(and(...conditions))
       .groupBy(sedes.id, sedes.nombre)
-      .orderBy(desc(sql`monto_total`));
+      .orderBy(desc(sql`COALESCE(SUM((SELECT SUM(oa.precio) FROM orden_analisis oa WHERE oa.orden_id = ${ordenes.id})), 0)`));
 
     const sedesRes = rows.map((row) => {
       const cantidad = Number(row.cantidad_ordenes) || 0;
@@ -176,7 +303,7 @@ class ReportesService {
       .leftJoin(ordenes, eq(ordenAnalisis.orden_id, ordenes.id))
       .where(and(...conditions))
       .groupBy(analisis.id, analisis.nombre)
-      .orderBy(desc(sql`cantidad_solicitudes`))
+      .orderBy(desc(sql`COUNT(${ordenAnalisis.id})`))
       .limit(20);
 
     const total_solicitudes = rows.reduce(
@@ -290,6 +417,23 @@ class ReportesService {
       grupos[valor] = (grupos[valor] || 0) + 1;
     });
     return Object.entries(grupos).map(([tipo, cantidad]) => ({ tipo, cantidad }));
+  }
+
+  private agruparPorMetodoPago(items: OrdenReporte[]): MetodoPagoTotales[] {
+    const grupos: Record<string, { cantidad: number; monto: number }> = {};
+    items.forEach((item) => {
+      const metodo = (item.metodo_pago || 'EFECTIVO').toUpperCase();
+      if (!grupos[metodo]) {
+        grupos[metodo] = { cantidad: 0, monto: 0 };
+      }
+      grupos[metodo].cantidad += 1;
+      grupos[metodo].monto += Number(item.monto_total) || 0;
+    });
+    return Object.entries(grupos).map(([metodo, val]) => ({
+      metodo,
+      cantidad: val.cantidad,
+      monto: val.monto,
+    }));
   }
 }
 

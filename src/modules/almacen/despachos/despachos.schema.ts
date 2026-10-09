@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { zMultiNumber, zMultiString } from '../shared/almacen.filters';
 
 const id = z.coerce.number().int().positive('ID inválido');
 
@@ -34,9 +35,9 @@ export const listarDespachosSchema = z.object({
   query: z.object({
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(500).default(10),
-    almacen_id: z.coerce.number().int().positive().optional(),
+    almacen_id: zMultiNumber(),
     receptor_personal_id: z.coerce.number().int().positive().optional(),
-    estado: z.enum(['REGISTRADO', 'ANULADO']).optional(),
+    estado: zMultiString(),
     fecha_desde: z.string().optional(),
     fecha_hasta: z.string().optional(),
     search: z.string().optional(),

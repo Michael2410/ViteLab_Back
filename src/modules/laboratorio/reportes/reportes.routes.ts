@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { reportesController } from './reportes.controller';
-import { authenticateToken } from '../../../middleware/auth.middleware';
+import { authenticateToken, requirePermissions } from '../../../middleware/auth.middleware';
 
 const router = Router();
 
@@ -47,7 +47,18 @@ router.use(authenticateToken);
  */
 router.get(
   '/ordenes-periodo',
+  requirePermissions(['reports.ordenes.read', 'reports.read'], false),
   reportesController.getOrdenesPorPeriodo.bind(reportesController)
+);
+
+/**
+  * GET /api/reportes/cuadre-caja
+  * Cuadre de caja diaria por fecha, sede y usuario
+  */
+router.get(
+  '/cuadre-caja',
+  requirePermissions(['reports.cuadre_caja.read', 'reports.read'], false),
+  reportesController.getCuadreCaja.bind(reportesController)
 );
 
 /**
@@ -75,6 +86,7 @@ router.get(
  */
 router.get(
   '/ingresos-sede',
+  requirePermissions(['reports.ingresos.read', 'reports.read'], false),
   reportesController.getIngresosPorSede.bind(reportesController)
 );
 
@@ -103,6 +115,7 @@ router.get(
  */
 router.get(
   '/analisis-ranking',
+  requirePermissions(['reports.analisis.read', 'reports.read'], false),
   reportesController.getAnalisisRanking.bind(reportesController)
 );
 
@@ -131,6 +144,7 @@ router.get(
  */
 router.get(
   '/productividad',
+  requirePermissions(['reports.productividad.read', 'reports.read'], false),
   reportesController.getProductividadUsuarios.bind(reportesController)
 );
 

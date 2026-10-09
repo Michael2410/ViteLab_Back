@@ -8,12 +8,22 @@ export class AsistenciaController {
     try {
       const { fecha, fecha_desde, fecha_hasta, personal_id, estado, search } = req.query;
 
+      const parseMultiString = (val: any): string[] | undefined => {
+        if (!val) return undefined;
+        if (Array.isArray(val)) {
+          const arr = val.map(String).map((s) => s.trim()).filter(Boolean);
+          return arr.length > 0 ? arr : undefined;
+        }
+        const arr = String(val).split(',').map((s) => s.trim()).filter(Boolean);
+        return arr.length > 0 ? arr : undefined;
+      };
+
       const items = await asistenciaService.getAllAsistencia({
         fecha: fecha as string,
         fecha_desde: fecha_desde as string,
         fecha_hasta: fecha_hasta as string,
         personal_id: personal_id ? Number(personal_id) : undefined,
-        estado: estado as EstadoAsistencia,
+        estado: parseMultiString(estado) as any,
         search: search as string,
       });
 

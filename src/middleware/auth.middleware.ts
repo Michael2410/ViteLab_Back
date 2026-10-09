@@ -1,9 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
 import { JwtPayload } from '../modules/auth/auth.types';
 import { errorResponse } from '../utils/response.utils';
 import { db, usuarios, roles, rolesPermisos, permisos } from '../db';
-import { eq, and } from 'drizzle-orm';
+import { masterDb, masterSessions } from '../db/master';
+import { eq, and, isNull } from 'drizzle-orm';
+import { getActiveTenant, tenantStorage } from '../db/tenant-context';
+import { tenantConnectionManager } from '../db/connection-manager';
 
 // Extender Request para incluir user
 declare global {
@@ -45,19 +49,96 @@ export const authenticateToken = async (
       process.env.JWT_ACCESS_SECRET || 'access_secret'
     ) as JwtPayload;
 
-    // Verificar que el usuario existe y está activo
-    const [user] = await db
-      .select({ id: usuarios.id })
-      .from(usuarios)
-      .where(and(eq(usuarios.id, decoded.userId), eq(usuarios.activo, true)));
+    // Validación de sesión activa en Master DB si aplica
+    const authSource = process.env.AUTH_SOURCE || 'master';
+    if (authSource === 'master' && decoded.sessionId) {
+      try {
+        const [session] = await masterDb
+          .select({ id: masterSessions.id, expires_at: masterSessions.expires_at })
+          .from(masterSessions)
+          .where(
+            and(
+              eq(masterSessions.id, decoded.sessionId),
+              isNull(masterSessions.revoked_at)
+            )
+          );
 
-    if (!user) {
-      return errorResponse(res, 'Usuario no autorizado', null, 401);
+        if (!session || new Date(session.expires_at) < new Date()) {
+          return errorResponse(res, 'Sesión expirada o revocada. Inicie sesión nuevamente.', null, 401);
+        }
+      } catch (err) {
+        console.warn('⚠️ No se pudo verificar sesión en masterSessions:', err);
+      }
     }
 
-    // Agregar user al request
-    req.user = decoded;
-    next();
+    // Si ya existe un contexto de tenant activo en este request, reutilizarlo
+    if (tenantStorage.getStore()) {
+      const [user] = await db
+        .select({ id: usuarios.id, identity_id: usuarios.identity_id })
+        .from(usuarios)
+        .where(and(eq(usuarios.id, decoded.userId), eq(usuarios.activo, true)));
+
+      if (!user) {
+        return errorResponse(res, 'Usuario no autorizado o inactivo', null, 401);
+      }
+
+      req.user = decoded;
+      return next();
+    }
+
+    // Resolver tenant
+    const tenantIdentifier = decoded.tenantId || (decoded as any).tenantSlug || 'vitelab_central';
+    let tenant;
+    try {
+      tenant = await getActiveTenant(tenantIdentifier);
+    } catch (e: any) {
+      return errorResponse(res, `Tenant no disponible o inactivo: ${e.message}`, null, 401);
+    }
+
+    const lease = await tenantConnectionManager.acquire(tenant);
+    let released = false;
+    const releaseOnce = () => {
+      if (!released) {
+        released = true;
+        lease.release();
+      }
+    };
+    res.on('finish', releaseOnce);
+    res.on('close', releaseOnce);
+
+    return tenantStorage.run(
+      {
+        tenantId: tenant.id,
+        tenantSlug: tenant.slug,
+        db: lease.db,
+        actor: {
+          kind: 'user',
+          identityId: decoded.sub || String(decoded.userId),
+          usuarioId: decoded.userId,
+        },
+        requestId: (req.headers['x-request-id'] as string) || randomUUID(),
+      },
+      async () => {
+        try {
+          // Verificar que el usuario existe y está activo en el tenant
+          const [user] = await db
+            .select({ id: usuarios.id, identity_id: usuarios.identity_id })
+            .from(usuarios)
+            .where(and(eq(usuarios.id, decoded.userId), eq(usuarios.activo, true)));
+
+          if (!user) {
+            return errorResponse(res, 'Usuario no autorizado o inactivo', null, 401);
+          }
+
+          // Agregar user al request con compatibilidad completa
+          req.user = decoded;
+          return next();
+        } catch (innerError: any) {
+          console.error('Error al verificar usuario en tenant:', innerError);
+          return errorResponse(res, 'Error de autenticación en laboratorio', null, 500);
+        }
+      }
+    );
   } catch (error: any) {
     if (error.name === 'TokenExpiredError') {
       return errorResponse(res, 'Token expirado', null, 401);

@@ -7,7 +7,13 @@ import {
   updateUserSchema,
   verify2FASchema,
   confirm2FASetupSchema,
+  selectTenantSchema,
+  switchTenantSchema,
+  changeInitialPasswordSchema,
+  resetUserPasswordSchema,
 } from './auth.schema';
+import { masterDb, masterTenants } from '../../db/master';
+import { eq } from 'drizzle-orm';
 import { successResponse, errorResponse, asyncHandler } from '../../utils/response.utils';
 
 const authService = new AuthService();
@@ -25,7 +31,8 @@ export class AuthController {
     }
 
     try {
-      const result = await authService.login(validation.data);
+      const userAgent = req.headers['user-agent'] ? String(req.headers['user-agent']) : undefined;
+      const result = await authService.login(validation.data, req.ip, userAgent);
       const message = (result as any).requires2FA ? 'Verificación 2FA requerida' : 'Login exitoso';
       return successResponse(res, result, message, 200);
     } catch (error: any) {
@@ -88,6 +95,50 @@ export class AuthController {
   });
 
   /**
+   * POST /api/auth/change-initial-password
+   */
+  changeInitialPassword = asyncHandler(async (req: Request, res: Response) => {
+    const validation = changeInitialPasswordSchema.safeParse(req.body);
+
+    if (!validation.success) {
+      return errorResponse(res, validation.error.issues?.[0]?.message || 'Datos inválidos', 400);
+    }
+
+    try {
+      const result = await authService.changeInitialPassword(
+        validation.data.tempToken,
+        validation.data.newPassword
+      );
+      return successResponse(res, result, 'Contraseña actualizada exitosamente', 200);
+    } catch (error: any) {
+      return errorResponse(res, error.message, 400);
+    }
+  });
+
+  /**
+   * POST /api/auth/users/:userId/reset-password
+   */
+  adminResetPassword = asyncHandler(async (req: Request, res: Response) => {
+    const userId = parseInt(req.params.userId);
+
+    if (isNaN(userId)) {
+      return errorResponse(res, 'ID de usuario inválido', 400);
+    }
+
+    const validation = resetUserPasswordSchema.safeParse(req.body);
+    if (!validation.success) {
+      return errorResponse(res, validation.error.issues?.[0]?.message || 'Datos inválidos', 400);
+    }
+
+    try {
+      const result = await authService.adminResetPassword(userId, validation.data.newPassword);
+      return successResponse(res, result, result.message, 200);
+    } catch (error: any) {
+      return errorResponse(res, error.message, 400);
+    }
+  });
+
+  /**
    * POST /api/auth/refresh
    */
   refreshToken = asyncHandler(async (req: Request, res: Response) => {
@@ -118,12 +169,74 @@ export class AuthController {
     await authService.logout(userId);
     return successResponse(res, null, 'Logout exitoso', 200);
   });
+  /**
+   * POST /api/auth/select-tenant
+   */
+  selectTenant = asyncHandler(async (req: Request, res: Response) => {
+    const validation = selectTenantSchema.safeParse(req.body);
+
+    if (!validation.success) {
+      return errorResponse(res, 'Datos de selección inválidos', 400);
+    }
+
+    try {
+      const result = await authService.selectTenant(validation.data.tempToken, validation.data.tenantId);
+      return successResponse(res, result, 'Laboratorio seleccionado exitosamente', 200);
+    } catch (error: any) {
+      return errorResponse(res, error.message, 401);
+    }
+  });
+
+  /**
+   * POST /api/auth/switch-tenant
+   */
+  switchTenant = asyncHandler(async (req: Request, res: Response) => {
+    const validation = switchTenantSchema.safeParse(req.body);
+
+    if (!validation.success) {
+      return errorResponse(res, 'ID de laboratorio inválido', 400);
+    }
+
+    const identityId = (req as any).user?.sub;
+    const sessionId = (req as any).user?.sessionId;
+
+    if (!identityId) {
+      return errorResponse(res, 'Sesión no vinculada a identidad Master', 401);
+    }
+
+    try {
+      const result = await authService.switchTenant(identityId, sessionId, validation.data.tenantId);
+      return successResponse(res, result, 'Cambio de laboratorio exitoso', 200);
+    } catch (error: any) {
+      return errorResponse(res, error.message, 400);
+    }
+  });
+
+  /**
+   * GET /api/auth/my-tenants
+   */
+  getMyTenants = asyncHandler(async (req: Request, res: Response) => {
+    const identityId = (req as any).user?.sub;
+    const currentTenantId = (req as any).user?.tenantId;
+
+    if (!identityId) {
+      return errorResponse(res, 'No autenticado', 401);
+    }
+
+    try {
+      const tenants = await authService.getUserActiveTenants(identityId, currentTenantId);
+      return successResponse(res, tenants, 'Laboratorios obtenidos exitosamente', 200);
+    } catch (error: any) {
+      return errorResponse(res, error.message, 500);
+    }
+  });
 
   /**
    * GET /api/auth/me
    */
   getMe = asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).user?.userId;
+    const tenantId = (req as any).user?.tenantId;
 
     if (!userId) {
       return errorResponse(res, 'No autenticado', null, 401);
@@ -131,7 +244,19 @@ export class AuthController {
 
     try {
       const user = await authService.getUserWithPermissions(userId);
-      return successResponse(res, user, 'Usuario obtenido exitosamente', 200);
+      let activeTenant: any = null;
+      if (tenantId) {
+        const [t] = await masterDb
+          .select({
+            id: masterTenants.id,
+            slug: masterTenants.slug,
+            name: masterTenants.name,
+          })
+          .from(masterTenants)
+          .where(eq(masterTenants.id, tenantId));
+        activeTenant = t || null;
+      }
+      return successResponse(res, { ...user, activeTenant }, 'Usuario obtenido exitosamente', 200);
     } catch (error: any) {
       return errorResponse(res, error.message, null, 404);
     }

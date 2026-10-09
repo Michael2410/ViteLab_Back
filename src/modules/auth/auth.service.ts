@@ -1,6 +1,6 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { eq, and, or, asc, desc, sql } from 'drizzle-orm';
+import { eq, and, or, asc, desc, sql, isNull } from 'drizzle-orm';
 import { generateSecret, generateURI, verifySync } from 'otplib';
 import QRCode from 'qrcode';
 import crypto from 'crypto';
@@ -13,7 +13,24 @@ import {
   permisos,
   usuariosSedes,
   sedes,
+  runInTenant,
+  getTenantContext,
 } from '../../db';
+import {
+  masterDb,
+  masterIdentities,
+  masterTenants,
+  masterMemberships,
+  masterSessions,
+  masterMfaBackupCodes,
+  masterAuthEvents,
+} from '../../db/master';
+import {
+  encryptMfaSecret,
+  decryptMfaSecret,
+  hashBackupCode,
+  verifyBackupCode,
+} from '../../utils/crypto.utils';
 import {
   Usuario,
   UsuarioConRol,
@@ -24,6 +41,7 @@ import {
   CreateUserRequest,
   UpdateUserRequest,
   UsuarioConPermisos,
+  TenantSummary,
 } from './auth.types';
 
 function generateBackupCodes(count: number = 8): string[] {
@@ -42,11 +60,392 @@ export class AuthService {
 
   /**
    * Login de usuario (Paso 1: Validación de credenciales y bifurcación a 2FA)
+   * Soporta autenticación Master DB (default) con fallback a legacy según AUTH_SOURCE
    */
-  async login(credentials: LoginCredentials): Promise<LoginResponse> {
+  async login(
+    credentials: LoginCredentials,
+    ip?: string,
+    userAgent?: string
+  ): Promise<LoginResponse> {
+    const authSource = process.env.AUTH_SOURCE || 'master';
+
+    if (authSource === 'master') {
+      return this.loginMaster(credentials, ip, userAgent);
+    } else {
+      return this.loginLegacy(credentials);
+    }
+  }
+
+  /**
+   * Login contra Master DB (Multi-Tenant)
+   */
+  async loginMaster(
+    credentials: LoginCredentials,
+    ip?: string,
+    userAgent?: string
+  ): Promise<LoginResponse> {
+    const { username, password } = credentials;
+    const input = username.trim().toLowerCase();
+
+    // 1. Buscar identidad en Master por email
+    let identity: any = null;
+
+    if (input.includes('@')) {
+      const [idRow] = await masterDb
+        .select()
+        .from(masterIdentities)
+        .where(eq(masterIdentities.email, input));
+      identity = idRow;
+    } else {
+      // Si el usuario ingresó su username (ej: "admin"), resolver email desde BD tenant
+      const u = await runInTenant('vitelab_central', { kind: 'system', job: 'auth:resolve_user' }, async () => {
+        const [found] = await db
+          .select({ email: usuarios.email, identity_id: usuarios.identity_id })
+          .from(usuarios)
+          .where(and(sql`lower(${usuarios.username}) = ${input}`, eq(usuarios.activo, true)));
+        return found;
+      });
+
+      if (u) {
+        if (u.identity_id) {
+          const [idRow] = await masterDb
+            .select()
+            .from(masterIdentities)
+            .where(eq(masterIdentities.id, u.identity_id));
+          identity = idRow;
+        } else {
+          const [idRow] = await masterDb
+            .select()
+            .from(masterIdentities)
+            .where(eq(masterIdentities.email, u.email.trim().toLowerCase()));
+          identity = idRow;
+        }
+      }
+    }
+
+    // Prevención de ataques de temporización (timing attack) si la identidad no existe
+    if (!identity || identity.status !== 'ACTIVE') {
+      await bcrypt.compare(password, '$2b$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUU123456789012');
+      await this.recordAuthEvent('LOGIN_FAIL', null, null, ip, userAgent, {
+        identifier: input,
+        reason: 'identity_not_found_or_inactive',
+      });
+      throw new Error('Usuario o contraseña incorrectos');
+    }
+
+    // 2. Verificar contraseña contra password_hash en Master
+    const isPasswordValid = await bcrypt.compare(password, identity.password_hash);
+    if (!isPasswordValid) {
+      await this.recordAuthEvent('LOGIN_FAIL', identity.id, null, ip, userAgent, {
+        reason: 'invalid_password',
+      });
+      throw new Error('Usuario o contraseña incorrectos');
+    }
+
+    // 3. Obtener todas las membresías ACTIVAS del usuario en laboratorios ACTIVOS
+    const activeTenants = await masterDb
+      .select({
+        id: masterTenants.id,
+        slug: masterTenants.slug,
+        name: masterTenants.name,
+      })
+      .from(masterMemberships)
+      .innerJoin(masterTenants, eq(masterMemberships.tenant_id, masterTenants.id))
+      .where(
+        and(
+          eq(masterMemberships.identity_id, identity.id),
+          eq(masterMemberships.status, 'ACTIVE'),
+          eq(masterTenants.status, 'ACTIVE')
+        )
+      );
+
+    if (activeTenants.length === 0) {
+      throw new Error('No tiene laboratorios clínicos activos asignados a su cuenta');
+    }
+
+    // 4. Si tiene MFA habilitado en Master, exigir primero 2FA
+    if (identity.mfa_enabled && identity.mfa_secret_enc) {
+      const tempToken = jwt.sign(
+        {
+          identityId: identity.id,
+          email: identity.email,
+          stage: '2fa_pending',
+          tenantId: activeTenants.length === 1 ? activeTenants[0].id : undefined,
+        } as TwoFactorJwtPayload,
+        process.env.JWT_ACCESS_SECRET || 'access_secret',
+        { expiresIn: '5m' }
+      );
+
+      return {
+        requires2FA: true,
+        setupNeeded: false,
+        tempToken,
+      };
+    }
+
+    // 4.1 Si debe cambiar contraseña obligatoriamente (primer login o reseteo por admin)
+    if (identity.must_change_password) {
+      const tempToken = jwt.sign(
+        {
+          identityId: identity.id,
+          email: identity.email,
+          stage: 'password_change_pending',
+          tenantId: activeTenants.length === 1 ? activeTenants[0].id : undefined,
+        } as TwoFactorJwtPayload,
+        process.env.JWT_ACCESS_SECRET || 'access_secret',
+        { expiresIn: '15m' }
+      );
+
+      return {
+        requiresPasswordChange: true,
+        requires2FA: false,
+        requiresTenantSelection: false,
+        tempToken,
+        email: identity.email,
+      };
+    }
+
+    // 5. Si pertenece a UN SOLO laboratorio, ingresar directamente
+    if (activeTenants.length === 1) {
+      return this.completeTenantLogin(identity, activeTenants[0].id);
+    }
+
+    // 6. Si pertenece a MÚLTIPLES laboratorios activos, emitir token de selección
+    const tempToken = jwt.sign(
+      {
+        identityId: identity.id,
+        email: identity.email,
+        stage: 'tenant_selection',
+      } as TwoFactorJwtPayload,
+      process.env.JWT_ACCESS_SECRET || 'access_secret',
+      { expiresIn: '5m' }
+    );
+
+    return {
+      requiresTenantSelection: true,
+      requires2FA: false,
+      tempToken,
+      tenants: activeTenants,
+    };
+  }
+
+  /**
+   * Completa el login dentro del tenant especificado
+   */
+  async completeTenantLogin(
+    identity: any,
+    tenantId: string,
+    backupCodes?: string[]
+  ): Promise<LoginResponse> {
+    return await runInTenant(tenantId, { kind: 'system', job: 'auth:login' }, async () => {
+      const [user] = await db
+        .select({
+          id: usuarios.id,
+          identity_id: usuarios.identity_id,
+          username: usuarios.username,
+          email: usuarios.email,
+          password_hash: usuarios.password_hash,
+          rol_id: usuarios.rol_id,
+          personal_id: usuarios.personal_id,
+          activo: usuarios.activo,
+          two_factor_enabled: usuarios.two_factor_enabled,
+          two_factor_secret: usuarios.two_factor_secret,
+          refresh_token: usuarios.refresh_token,
+          refresh_token_expires_at: usuarios.refresh_token_expires_at,
+          created_at: usuarios.created_at,
+          updated_at: usuarios.updated_at,
+          nombres: sql<string>`COALESCE(${personal.nombres}, ${usuarios.username})`,
+          apellidos: sql<string>`COALESCE(${personal.apellidos}, '')`,
+          firma_url: personal.firma_url,
+          rol_nombre: roles.nombre,
+          rol_descripcion: roles.descripcion,
+        })
+        .from(usuarios)
+        .innerJoin(roles, eq(usuarios.rol_id, roles.id))
+        .leftJoin(personal, eq(usuarios.personal_id, personal.id))
+        .where(and(eq(usuarios.identity_id, identity.id), eq(usuarios.activo, true)));
+
+      if (!user) {
+        throw new Error('Usuario no encontrado o inactivo en este laboratorio');
+      }
+
+      // Si la identidad no tiene enrolado 2FA en Master, ofrecer onboarding inicial
+      if (!identity.mfa_enabled) {
+        const secret = generateSecret();
+        const otpauth = generateURI({ issuer: 'ViteLab', label: identity.email, secret });
+        const qrCodeDataUrl = await QRCode.toDataURL(otpauth);
+
+        await db
+          .update(usuarios)
+          .set({ two_factor_temp_secret: secret })
+          .where(eq(usuarios.id, user.id));
+
+        const tempToken = jwt.sign(
+          {
+            userId: user.id,
+            identityId: identity.id,
+            tenantId: tenantId,
+            username: user.username,
+            email: identity.email,
+            stage: '2fa_setup_pending',
+          } as TwoFactorJwtPayload,
+          process.env.JWT_ACCESS_SECRET || 'access_secret',
+          { expiresIn: '10m' }
+        );
+
+        return {
+          requires2FA: true,
+          setupNeeded: true,
+          tempToken,
+          qrCodeDataUrl,
+          manualKey: secret,
+        };
+      }
+
+      return this.completeLoginSession(user, backupCodes, identity.id, tenantId);
+    });
+  }
+
+  /**
+   * Seleccionar laboratorio en login multi-tenant
+   */
+  async selectTenant(tempToken: string, tenantId: string): Promise<LoginResponse> {
+    let payload: TwoFactorJwtPayload;
+    try {
+      payload = jwt.verify(
+        tempToken,
+        process.env.JWT_ACCESS_SECRET || 'access_secret'
+      ) as TwoFactorJwtPayload;
+    } catch {
+      throw new Error('La sesión de selección de laboratorio ha expirado. Inicie sesión nuevamente.');
+    }
+
+    if (payload.stage !== 'tenant_selection' || !payload.identityId) {
+      throw new Error('Token de selección de laboratorio inválido');
+    }
+
+    const [membership] = await masterDb
+      .select()
+      .from(masterMemberships)
+      .innerJoin(masterTenants, eq(masterMemberships.tenant_id, masterTenants.id))
+      .where(
+        and(
+          eq(masterMemberships.identity_id, payload.identityId),
+          eq(masterMemberships.tenant_id, tenantId),
+          eq(masterMemberships.status, 'ACTIVE'),
+          eq(masterTenants.status, 'ACTIVE')
+        )
+      );
+
+    if (!membership) {
+      throw new Error('No tiene membresía activa en el laboratorio clínico seleccionado');
+    }
+
+    const [identity] = await masterDb
+      .select()
+      .from(masterIdentities)
+      .where(eq(masterIdentities.id, payload.identityId));
+
+    if (!identity || identity.status !== 'ACTIVE') {
+      throw new Error('Cuenta de usuario no disponible');
+    }
+
+    await this.recordAuthEvent('TENANT_SELECT', payload.identityId, tenantId);
+
+    return this.completeTenantLogin(identity, tenantId);
+  }
+
+  /**
+   * Cambiar de laboratorio para una sesión activa
+   */
+  async switchTenant(
+    identityId: string,
+    currentSessionId: string | undefined,
+    targetTenantId: string
+  ): Promise<LoginResponse> {
+    // 1. Validar membership en el nuevo laboratorio
+    const [membership] = await masterDb
+      .select()
+      .from(masterMemberships)
+      .innerJoin(masterTenants, eq(masterMemberships.tenant_id, masterTenants.id))
+      .where(
+        and(
+          eq(masterMemberships.identity_id, identityId),
+          eq(masterMemberships.tenant_id, targetTenantId),
+          eq(masterMemberships.status, 'ACTIVE'),
+          eq(masterTenants.status, 'ACTIVE')
+        )
+      );
+
+    if (!membership) {
+      await this.recordAuthEvent('TENANT_SWITCH_FAIL', identityId, targetTenantId, null, null, {
+        reason: 'no_membership',
+      });
+      throw new Error('No tiene membresía activa en el laboratorio solicitado');
+    }
+
+    // 2. Revocar sesión anterior si existe
+    if (currentSessionId) {
+      await masterDb
+        .update(masterSessions)
+        .set({
+          revoked_at: new Date(),
+          revoked_reason: 'switch_tenant',
+        })
+        .where(eq(masterSessions.id, currentSessionId));
+    }
+
+    const [identity] = await masterDb
+      .select()
+      .from(masterIdentities)
+      .where(eq(masterIdentities.id, identityId));
+
+    if (!identity) {
+      throw new Error('Identidad no encontrada');
+    }
+
+    await this.recordAuthEvent('TENANT_SWITCH_SUCCESS', identityId, targetTenantId, null, null, {
+      previousSessionId: currentSessionId,
+    });
+
+    return this.completeTenantLogin(identity, targetTenantId);
+  }
+
+  /**
+   * Obtiene la lista de laboratorios activos donde el usuario tiene membresía
+   */
+  async getUserActiveTenants(
+    identityId: string,
+    currentTenantId?: string
+  ): Promise<(TenantSummary & { isCurrent: boolean })[]> {
+    const list = await masterDb
+      .select({
+        id: masterTenants.id,
+        slug: masterTenants.slug,
+        name: masterTenants.name,
+      })
+      .from(masterMemberships)
+      .innerJoin(masterTenants, eq(masterMemberships.tenant_id, masterTenants.id))
+      .where(
+        and(
+          eq(masterMemberships.identity_id, identityId),
+          eq(masterMemberships.status, 'ACTIVE'),
+          eq(masterTenants.status, 'ACTIVE')
+        )
+      );
+
+    return list.map((t) => ({
+      ...t,
+      isCurrent: t.id === currentTenantId,
+    }));
+  }
+
+  /**
+   * Login Legacy (Contra BD tenant única, preservado para rollback sin pérdida)
+   */
+  private async loginLegacy(credentials: LoginCredentials): Promise<LoginResponse> {
     const { username, password } = credentials;
 
-    // Buscar usuario con rol y personal
     const [user] = await db
       .select({
         id: usuarios.id,
@@ -71,19 +470,22 @@ export class AuthService {
       .from(usuarios)
       .innerJoin(roles, eq(usuarios.rol_id, roles.id))
       .leftJoin(personal, eq(usuarios.personal_id, personal.id))
-      .where(and(eq(usuarios.username, username), eq(usuarios.activo, true)));
+      .where(
+        and(
+          or(eq(usuarios.username, username), eq(usuarios.email, username.toLowerCase())),
+          eq(usuarios.activo, true)
+        )
+      );
 
     if (!user) {
       throw new Error('Usuario o contraseña incorrectos');
     }
 
-    // Verificar contraseña
     const isPasswordValid = await bcrypt.compare(password, user.password_hash);
     if (!isPasswordValid) {
       throw new Error('Usuario o contraseña incorrectos');
     }
 
-    // 2FA - CASO A: Usuario ya tiene 2FA configurado y activo
     if (user.two_factor_enabled && user.two_factor_secret) {
       const tempToken = jwt.sign(
         {
@@ -103,12 +505,10 @@ export class AuthService {
       };
     }
 
-    // 2FA - CASO B: Usuario requiere vincular 2FA por primera vez (Onboarding TOTP)
     const secret = generateSecret();
     const otpauth = generateURI({ issuer: 'ViteLab', label: user.username, secret });
     const qrCodeDataUrl = await QRCode.toDataURL(otpauth);
 
-    // Guardar secreto temporal para verificar en el paso 2
     await db
       .update(usuarios)
       .set({ two_factor_temp_secret: secret })
@@ -148,57 +548,86 @@ export class AuthService {
       throw new Error('La sesión de configuración ha expirado. Inicia sesión nuevamente.');
     }
 
-    if (payload.stage !== '2fa_setup_pending') {
-      throw new Error('Token de configuración no válido.');
+    if (!payload.userId) {
+      throw new Error('Token de configuración no válido (falta ID de usuario).');
     }
 
-    const [user] = await db
-      .select({
-        id: usuarios.id,
-        username: usuarios.username,
-        email: usuarios.email,
-        rol_id: usuarios.rol_id,
-        personal_id: usuarios.personal_id,
-        activo: usuarios.activo,
-        two_factor_temp_secret: usuarios.two_factor_temp_secret,
-        created_at: usuarios.created_at,
-        updated_at: usuarios.updated_at,
-        nombres: sql<string>`COALESCE(${personal.nombres}, ${usuarios.username})`,
-        apellidos: sql<string>`COALESCE(${personal.apellidos}, '')`,
-        firma_url: personal.firma_url,
-        rol_nombre: roles.nombre,
-        rol_descripcion: roles.descripcion,
-      })
-      .from(usuarios)
-      .innerJoin(roles, eq(usuarios.rol_id, roles.id))
-      .leftJoin(personal, eq(usuarios.personal_id, personal.id))
-      .where(and(eq(usuarios.id, payload.userId), eq(usuarios.activo, true)));
+    const currentUserId = payload.userId;
 
-    if (!user || !user.two_factor_temp_secret) {
-      throw new Error('Configuración no encontrada o usuario inactivo.');
-    }
+    return await runInTenant(payload.tenantId || 'vitelab_central', { kind: 'user', identityId: payload.identityId || String(currentUserId), usuarioId: currentUserId }, async () => {
+      const [user] = await db
+        .select({
+          id: usuarios.id,
+          identity_id: usuarios.identity_id,
+          username: usuarios.username,
+          email: usuarios.email,
+          rol_id: usuarios.rol_id,
+          personal_id: usuarios.personal_id,
+          activo: usuarios.activo,
+          two_factor_temp_secret: usuarios.two_factor_temp_secret,
+          created_at: usuarios.created_at,
+          updated_at: usuarios.updated_at,
+          nombres: sql<string>`COALESCE(${personal.nombres}, ${usuarios.username})`,
+          apellidos: sql<string>`COALESCE(${personal.apellidos}, '')`,
+          firma_url: personal.firma_url,
+          rol_nombre: roles.nombre,
+          rol_descripcion: roles.descripcion,
+        })
+        .from(usuarios)
+        .innerJoin(roles, eq(usuarios.rol_id, roles.id))
+        .leftJoin(personal, eq(usuarios.personal_id, personal.id))
+        .where(and(eq(usuarios.id, currentUserId), eq(usuarios.activo, true)));
 
-    // Validar código TOTP contra el secreto temporal
-    const isValid = verifySync({ token: code.trim(), secret: user.two_factor_temp_secret, epochTolerance: 30 }).valid;
-    if (!isValid) {
-      throw new Error('Código de verificación incorrecto. Ingresa el código actual que muestra tu aplicación.');
-    }
+      if (!user || !user.two_factor_temp_secret) {
+        throw new Error('Configuración no encontrada o usuario inactivo.');
+      }
 
-    // Generar códigos de respaldo únicos
-    const backupCodes = generateBackupCodes(8);
+      // Validar código TOTP contra el secreto temporal
+      const isValid = verifySync({ token: code.trim(), secret: user.two_factor_temp_secret, epochTolerance: 30 }).valid;
+      if (!isValid) {
+        throw new Error('Código de verificación incorrecto. Ingresa el código actual que muestra tu aplicación.');
+      }
 
-    // Activar 2FA de forma definitiva
-    await db
-      .update(usuarios)
-      .set({
-        two_factor_enabled: true,
-        two_factor_secret: user.two_factor_temp_secret,
-        two_factor_temp_secret: null,
-        two_factor_backup_codes: JSON.stringify(backupCodes),
-      })
-      .where(eq(usuarios.id, user.id));
+      // Generar códigos de respaldo únicos
+      const backupCodes = generateBackupCodes(8);
 
-    return this.completeLoginSession(user, backupCodes);
+      // 1. Si AUTH_SOURCE es master y el usuario tiene identity_id, guardar en Master DB
+      const authSource = process.env.AUTH_SOURCE || 'master';
+      if (authSource === 'master' && user.identity_id) {
+        const encryptedSecret = encryptMfaSecret(user.two_factor_temp_secret);
+        await masterDb
+          .update(masterIdentities)
+          .set({
+            mfa_enabled: true,
+            mfa_secret_enc: encryptedSecret,
+            mfa_enrolled_at: new Date(),
+            updated_at: new Date(),
+          })
+          .where(eq(masterIdentities.id, user.identity_id));
+
+        // Guardar códigos de respaldo hasheados en Master DB
+        await masterDb.delete(masterMfaBackupCodes).where(eq(masterMfaBackupCodes.identity_id, user.identity_id));
+        for (const bCode of backupCodes) {
+          await masterDb.insert(masterMfaBackupCodes).values({
+            identity_id: user.identity_id,
+            code_hash: hashBackupCode(bCode),
+          });
+        }
+      }
+
+      // 2. Activar 2FA también en la BD local del tenant para redundancia
+      await db
+        .update(usuarios)
+        .set({
+          two_factor_enabled: true,
+          two_factor_secret: user.two_factor_temp_secret,
+          two_factor_temp_secret: null,
+          two_factor_backup_codes: JSON.stringify(backupCodes),
+        })
+        .where(eq(usuarios.id, user.id));
+
+      return this.completeLoginSession(user, backupCodes, payload.identityId, payload.tenantId);
+    });
   }
 
   /**
@@ -219,9 +648,117 @@ export class AuthService {
       throw new Error('Token de verificación no válido.');
     }
 
+    const authSource = process.env.AUTH_SOURCE || 'master';
+
+    // ============================================
+    // CASO 1: VERIFICACIÓN CON MASTER DB
+    // ============================================
+    if (authSource === 'master' && payload.identityId) {
+      const identityId = payload.identityId;
+      const [identity] = await masterDb
+        .select()
+        .from(masterIdentities)
+        .where(eq(masterIdentities.id, identityId));
+
+      if (!identity || !identity.mfa_enabled || !identity.mfa_secret_enc) {
+        throw new Error('Usuario no encontrado o 2FA no habilitado en Master.');
+      }
+
+      const decryptedSecret = decryptMfaSecret(identity.mfa_secret_enc);
+      let isValid = verifySync({ token: code.trim(), secret: decryptedSecret, epochTolerance: 30 }).valid;
+
+      // Probar códigos de respaldo en Master
+      if (!isValid) {
+        const inputHash = hashBackupCode(code);
+        const [matchingCode] = await masterDb
+          .select()
+          .from(masterMfaBackupCodes)
+          .where(
+            and(
+              eq(masterMfaBackupCodes.identity_id, identity.id),
+              eq(masterMfaBackupCodes.code_hash, inputHash),
+              isNull(masterMfaBackupCodes.used_at)
+            )
+          );
+
+        if (matchingCode) {
+          isValid = true;
+          // Quemar código de respaldo usado
+          await masterDb
+            .update(masterMfaBackupCodes)
+            .set({ used_at: new Date() })
+            .where(eq(masterMfaBackupCodes.id, matchingCode.id));
+        }
+      }
+
+      if (!isValid) {
+        throw new Error('Código de autenticación incorrecto o expirado.');
+      }
+
+      // Si debe cambiar contraseña tras validar 2FA
+      if (identity.must_change_password) {
+        const tempToken = jwt.sign(
+          {
+            identityId: identity.id,
+            email: identity.email,
+            stage: 'password_change_pending',
+            tenantId: payload.tenantId,
+          } as TwoFactorJwtPayload,
+          process.env.JWT_ACCESS_SECRET || 'access_secret',
+          { expiresIn: '15m' }
+        );
+
+        return {
+          requiresPasswordChange: true,
+          requires2FA: false,
+          requiresTenantSelection: false,
+          tempToken,
+          email: identity.email,
+        };
+      }
+
+      // Si venía un tenantId preseleccionado en el token temporal
+      if (payload.tenantId) {
+        return this.completeTenantLogin(identity, payload.tenantId);
+      }
+
+      // Si no, evaluar membresías activas del usuario
+      const userTenants = await this.getUserActiveTenants(identity.id);
+      if (userTenants.length === 1) {
+        return this.completeTenantLogin(identity, userTenants[0].id);
+      } else if (userTenants.length > 1) {
+        const tempToken = jwt.sign(
+          {
+            identityId: identity.id,
+            email: identity.email,
+            stage: 'tenant_selection',
+          } as TwoFactorJwtPayload,
+          process.env.JWT_ACCESS_SECRET || 'access_secret',
+          { expiresIn: '5m' }
+        );
+        return {
+          requiresTenantSelection: true,
+          requires2FA: false,
+          tempToken,
+          tenants: userTenants,
+        };
+      } else {
+        throw new Error('No tiene laboratorios clínicos activos asignados');
+      }
+    }
+
+    // ============================================
+    // CASO 2: VERIFICACIÓN LEGACY
+    // ============================================
+    if (!payload.userId) {
+      throw new Error('ID de usuario no encontrado en token');
+    }
+    const legacyUserId = payload.userId;
+
     const [user] = await db
       .select({
         id: usuarios.id,
+        identity_id: usuarios.identity_id,
         username: usuarios.username,
         email: usuarios.email,
         rol_id: usuarios.rol_id,
@@ -241,16 +778,14 @@ export class AuthService {
       .from(usuarios)
       .innerJoin(roles, eq(usuarios.rol_id, roles.id))
       .leftJoin(personal, eq(usuarios.personal_id, personal.id))
-      .where(and(eq(usuarios.id, payload.userId), eq(usuarios.activo, true)));
+      .where(and(eq(usuarios.id, legacyUserId), eq(usuarios.activo, true)));
 
     if (!user || !user.two_factor_secret) {
       throw new Error('Usuario no encontrado o 2FA no habilitado.');
     }
 
-    // 1. Probar como código TOTP dinámico de 6 dígitos
     let isValid = verifySync({ token: code.trim(), secret: user.two_factor_secret, epochTolerance: 30 }).valid;
 
-    // 2. Si no es válido como TOTP, verificar si es un código de respaldo
     if (!isValid && user.two_factor_backup_codes) {
       try {
         const backupCodes: string[] = JSON.parse(user.two_factor_backup_codes);
@@ -261,7 +796,6 @@ export class AuthService {
 
         if (foundIndex !== -1) {
           isValid = true;
-          // Eliminar el código usado (single-use)
           backupCodes.splice(foundIndex, 1);
           await db
             .update(usuarios)
@@ -284,6 +818,29 @@ export class AuthService {
    * Resetear 2FA por parte de un Administrador (desde gestión de usuarios)
    */
   async adminReset2FA(targetUserId: number): Promise<void> {
+    const [user] = await db
+      .select({ id: usuarios.id, identity_id: usuarios.identity_id })
+      .from(usuarios)
+      .where(eq(usuarios.id, targetUserId));
+
+    if (user?.identity_id) {
+      // Limpiar 2FA en Master DB
+      await masterDb
+        .update(masterIdentities)
+        .set({
+          mfa_enabled: false,
+          mfa_secret_enc: null,
+          mfa_enrolled_at: null,
+          updated_at: new Date(),
+        })
+        .where(eq(masterIdentities.id, user.identity_id));
+
+      await masterDb
+        .delete(masterMfaBackupCodes)
+        .where(eq(masterMfaBackupCodes.identity_id, user.identity_id));
+    }
+
+    // Limpiar 2FA en BD del tenant
     await db
       .update(usuarios)
       .set({
@@ -297,17 +854,227 @@ export class AuthService {
   }
 
   /**
+   * Cambiar contraseña inicial o provisional tras primer login o reseteo
+   */
+  async changeInitialPassword(
+    tempToken: string,
+    newPassword: string
+  ): Promise<LoginResponse> {
+    let payload: TwoFactorJwtPayload;
+    try {
+      payload = jwt.verify(
+        tempToken,
+        process.env.JWT_ACCESS_SECRET || 'access_secret'
+      ) as TwoFactorJwtPayload;
+    } catch {
+      throw new Error('La sesión para cambiar contraseña ha expirado. Inicia sesión nuevamente.');
+    }
+
+    if (payload.stage !== 'password_change_pending' || !payload.identityId) {
+      throw new Error('Token no válido para cambio de contraseña obligatorio.');
+    }
+
+    if (!newPassword || newPassword.trim().length < 6) {
+      throw new Error('La nueva contraseña debe tener al menos 6 caracteres.');
+    }
+
+    const [identity] = await masterDb
+      .select()
+      .from(masterIdentities)
+      .where(eq(masterIdentities.id, payload.identityId));
+
+    if (!identity || identity.status !== 'ACTIVE') {
+      throw new Error('Cuenta de usuario no disponible o inactiva.');
+    }
+
+    // Verificar que la nueva clave no sea igual a la provisional
+    if (identity.password_hash) {
+      const isSamePassword = await bcrypt.compare(newPassword, identity.password_hash);
+      if (isSamePassword) {
+        throw new Error('La nueva contraseña debe ser diferente a la contraseña provisional.');
+      }
+    }
+
+    const newPasswordHash = await bcrypt.hash(newPassword, 10);
+
+    // 1. Actualizar Master DB
+    await masterDb
+      .update(masterIdentities)
+      .set({
+        password_hash: newPasswordHash,
+        must_change_password: false,
+        password_changed_at: new Date(),
+        updated_at: new Date(),
+      })
+      .where(eq(masterIdentities.id, identity.id));
+
+    // 2. Obtener laboratorios activos del usuario
+    const userTenants = await this.getUserActiveTenants(identity.id);
+
+    // 3. Sincronizar en tenants donde tenga cuenta
+    for (const t of userTenants) {
+      try {
+        await runInTenant(t.id, { kind: 'system', job: 'auth:sync-password' }, async () => {
+          await db
+            .update(usuarios)
+            .set({
+              password_hash: newPasswordHash,
+              updated_at: sql`CURRENT_TIMESTAMP` as any,
+            })
+            .where(eq(usuarios.identity_id, identity.id));
+        });
+      } catch (err) {
+        console.warn(`No se pudo sincronizar clave en tenant ${t.id}:`, err);
+      }
+    }
+
+    await this.recordAuthEvent('PASSWORD_CHANGE', identity.id, payload.tenantId || null, null, null, {
+      type: 'initial_or_reset_change',
+    });
+
+    // 4. Continuar al laboratorio correspondiente
+    if (payload.tenantId) {
+      return this.completeTenantLogin(identity, payload.tenantId);
+    }
+
+    if (userTenants.length === 1) {
+      return this.completeTenantLogin(identity, userTenants[0].id);
+    } else if (userTenants.length > 1) {
+      const tenantToken = jwt.sign(
+        {
+          identityId: identity.id,
+          email: identity.email,
+          stage: 'tenant_selection',
+        } as TwoFactorJwtPayload,
+        process.env.JWT_ACCESS_SECRET || 'access_secret',
+        { expiresIn: '5m' }
+      );
+      return {
+        requiresTenantSelection: true,
+        requires2FA: false,
+        tempToken: tenantToken,
+        tenants: userTenants,
+      };
+    } else {
+      throw new Error('No tiene laboratorios clínicos activos asignados');
+    }
+  }
+
+  /**
+   * Resetear contraseña de un usuario por parte del Administrador
+   */
+  async adminResetPassword(
+    targetUserId: number,
+    customNewPassword?: string
+  ): Promise<{ temporaryPassword: string; message: string }> {
+    const [user] = await db
+      .select({
+        id: usuarios.id,
+        identity_id: usuarios.identity_id,
+        username: usuarios.username,
+        email: usuarios.email,
+      })
+      .from(usuarios)
+      .where(eq(usuarios.id, targetUserId));
+
+    if (!user) {
+      throw new Error('Usuario no encontrado en este laboratorio');
+    }
+
+    // Generar contraseña temporal si no se provee una
+    const tempPassword =
+      customNewPassword && customNewPassword.trim().length >= 6
+        ? customNewPassword.trim()
+        : `ViteLab${Math.floor(1000 + Math.random() * 9000)}!`;
+
+    const passwordHash = await bcrypt.hash(tempPassword, 10);
+
+    // 1. Actualizar en el tenant DB
+    await db
+      .update(usuarios)
+      .set({
+        password_hash: passwordHash,
+        updated_at: sql`CURRENT_TIMESTAMP` as any,
+      })
+      .where(eq(usuarios.id, targetUserId));
+
+    // 2. Si tiene identidad en Master DB, forzar must_change_password = true
+    if (user.identity_id) {
+      await masterDb
+        .update(masterIdentities)
+        .set({
+          password_hash: passwordHash,
+          must_change_password: true,
+          password_changed_at: new Date(),
+          updated_at: new Date(),
+        })
+        .where(eq(masterIdentities.id, user.identity_id));
+
+      await this.recordAuthEvent('ADMIN_PASSWORD_RESET', user.identity_id, null, null, null, {
+        targetUserId: user.id,
+        username: user.username,
+      });
+    }
+
+    return {
+      temporaryPassword: tempPassword,
+      message:
+        'Contraseña restablecida exitosamente. El usuario deberá cambiarla obligatoriamente en su próximo inicio de sesión.',
+    };
+  }
+
+  /**
    * Completar sesión de login y emitir tokens JWT
    */
-  private async completeLoginSession(user: any, backupCodes?: string[]): Promise<LoginResponse> {
+  private async completeLoginSession(
+    user: any,
+    backupCodes?: string[],
+    identityId?: string,
+    tenantId?: string
+  ): Promise<LoginResponse> {
     const userSedes = await this.getUserSedes(user.id);
     const userPermisos = await this.getUserPermisos(user.rol_id);
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7);
+
+    let sessionId: string | undefined;
+
+    // Registrar sesión en Master DB si aplica
+    const authSource = process.env.AUTH_SOURCE || 'master';
+    const effectiveIdentityId = identityId || user.identity_id;
+
+    if (authSource === 'master' && effectiveIdentityId) {
+      try {
+        const refreshPlaceholder = crypto.randomBytes(32).toString('hex');
+        const refreshHash = crypto.createHash('sha256').update(refreshPlaceholder).digest('hex');
+
+        const [sessionRow] = await masterDb
+          .insert(masterSessions)
+          .values({
+            identity_id: effectiveIdentityId,
+            tenant_id: tenantId || null,
+            refresh_token_hash: refreshHash,
+            mfa_verified_at: new Date(),
+            expires_at: expiresAt,
+          })
+          .returning({ id: masterSessions.id });
+
+        sessionId = sessionRow?.id;
+      } catch (err) {
+        console.warn('⚠️ No se pudo registrar sesión en masterSessions:', err);
+      }
+    }
 
     const accessToken = this.generateAccessToken({
       userId: user.id,
       username: user.username,
       email: user.email,
       rolId: user.rol_id,
+      sub: effectiveIdentityId,
+      tenantId: tenantId,
+      sessionId: sessionId,
+      scope: 'tenant',
     });
 
     const refreshToken = this.generateRefreshToken({
@@ -315,11 +1082,22 @@ export class AuthService {
       username: user.username,
       email: user.email,
       rolId: user.rol_id,
+      sub: effectiveIdentityId,
+      tenantId: tenantId,
+      sessionId: sessionId,
+      scope: 'tenant',
     });
 
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
+    // Actualizar hash real de refresh token en Master si hubo sesión
+    if (sessionId) {
+      const realRefreshHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+      await masterDb
+        .update(masterSessions)
+        .set({ refresh_token_hash: realRefreshHash })
+        .where(eq(masterSessions.id, sessionId));
+    }
 
+    // Guardar en BD tenant para retrocompatibilidad
     await db
       .update(usuarios)
       .set({
@@ -338,14 +1116,34 @@ export class AuthService {
       ...userWithoutSensitiveData
     } = user;
 
+    let activeTenant: any = undefined;
+    if (tenantId) {
+      const [t] = await masterDb
+        .select({
+          id: masterTenants.id,
+          slug: masterTenants.slug,
+          name: masterTenants.name,
+        })
+        .from(masterTenants)
+        .where(eq(masterTenants.id, tenantId));
+      if (t) activeTenant = t;
+    }
+
+    await this.recordAuthEvent('LOGIN_SUCCESS', effectiveIdentityId, tenantId, null, null, {
+      username: user.username,
+      sessionId,
+    });
+
     return {
       requires2FA: false,
+      requiresTenantSelection: false,
       user: {
         ...userWithoutSensitiveData,
         two_factor_enabled: true,
         sedes: userSedes,
         permisos: userPermisos,
       } as any,
+      activeTenant,
       accessToken,
       refreshToken,
       ...(backupCodes ? { backupCodes } : {}),
@@ -364,59 +1162,69 @@ export class AuthService {
         process.env.JWT_REFRESH_SECRET || 'refresh_secret'
       ) as JwtPayload;
 
-      const [user] = await db
-        .select({
-          id: usuarios.id,
-          username: usuarios.username,
-          email: usuarios.email,
-          rol_id: usuarios.rol_id,
-          refresh_token: usuarios.refresh_token,
-          refresh_token_expires_at: usuarios.refresh_token_expires_at,
-        })
-        .from(usuarios)
-        .where(and(eq(usuarios.id, decoded.userId), eq(usuarios.activo, true)));
+      return await runInTenant(decoded.tenantId || 'vitelab_central', { kind: 'user', identityId: decoded.sub || String(decoded.userId), usuarioId: decoded.userId }, async () => {
+        const [user] = await db
+          .select({
+            id: usuarios.id,
+            username: usuarios.username,
+            email: usuarios.email,
+            rol_id: usuarios.rol_id,
+            refresh_token: usuarios.refresh_token,
+            refresh_token_expires_at: usuarios.refresh_token_expires_at,
+          })
+          .from(usuarios)
+          .where(and(eq(usuarios.id, decoded.userId), eq(usuarios.activo, true)));
 
-      if (!user) {
-        throw new Error('Usuario no encontrado');
-      }
+        if (!user) {
+          throw new Error('Usuario no encontrado');
+        }
 
-      if (user.refresh_token !== oldRefreshToken) {
-        throw new Error('Token inválido');
-      }
+        if (user.refresh_token !== oldRefreshToken) {
+          throw new Error('Token inválido');
+        }
 
-      if (!user.refresh_token_expires_at || new Date() > new Date(user.refresh_token_expires_at)) {
-        throw new Error('Refresh token expirado');
-      }
+        if (!user.refresh_token_expires_at || new Date() > new Date(user.refresh_token_expires_at)) {
+          throw new Error('Refresh token expirado');
+        }
 
-      const accessToken = this.generateAccessToken({
-        userId: user.id,
-        username: user.username,
-        email: user.email,
-        rolId: user.rol_id,
+        const accessToken = this.generateAccessToken({
+          userId: user.id,
+          username: user.username,
+          email: user.email,
+          rolId: user.rol_id,
+          sub: decoded.sub,
+          tenantId: decoded.tenantId,
+          sessionId: decoded.sessionId,
+          scope: 'tenant',
+        });
+
+        const refreshToken = this.generateRefreshToken({
+          userId: user.id,
+          username: user.username,
+          email: user.email,
+          rolId: user.rol_id,
+          sub: decoded.sub,
+          tenantId: decoded.tenantId,
+          sessionId: decoded.sessionId,
+          scope: 'tenant',
+        });
+
+        const expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + 7);
+
+        await db
+          .update(usuarios)
+          .set({
+            refresh_token: refreshToken,
+            refresh_token_expires_at: expiresAt.toISOString() as any,
+          })
+          .where(eq(usuarios.id, user.id));
+
+        return {
+          accessToken,
+          refreshToken,
+        };
       });
-
-      const refreshToken = this.generateRefreshToken({
-        userId: user.id,
-        username: user.username,
-        email: user.email,
-        rolId: user.rol_id,
-      });
-
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 7);
-
-      await db
-        .update(usuarios)
-        .set({
-          refresh_token: refreshToken,
-          refresh_token_expires_at: expiresAt.toISOString() as any,
-        })
-        .where(eq(usuarios.id, user.id));
-
-      return {
-        accessToken,
-        refreshToken,
-      };
     } catch (error) {
       throw new Error('Token inválido o expirado');
     }
@@ -540,6 +1348,57 @@ export class AuthService {
 
     const password_hash = await bcrypt.hash(password, 10);
 
+    // Sincronizar o crear identidad en Master DB
+    let identityId: string | null = null;
+    const authSource = process.env.AUTH_SOURCE || 'master';
+
+    if (authSource === 'master') {
+      const cleanEmail = email.trim().toLowerCase();
+      const [existingIdentity] = await masterDb
+        .select()
+        .from(masterIdentities)
+        .where(eq(masterIdentities.email, cleanEmail));
+
+      if (existingIdentity) {
+        identityId = existingIdentity.id;
+      } else {
+        const [newIdentity] = await masterDb
+          .insert(masterIdentities)
+          .values({
+            email: cleanEmail,
+            password_hash,
+            status: 'ACTIVE',
+            email_verified_at: new Date(),
+            must_change_password: true,
+          })
+          .returning({ id: masterIdentities.id });
+        identityId = newIdentity.id;
+      }
+
+      // Crear membresía en Master para este tenant
+      let currentTenantId: string | null = null;
+      try {
+        const ctx = getTenantContext();
+        currentTenantId = ctx?.tenantId || null;
+      } catch {
+        currentTenantId = null;
+      }
+
+      if (currentTenantId && identityId) {
+        await masterDb
+          .insert(masterMemberships)
+          .values({
+            identity_id: identityId,
+            tenant_id: currentTenantId,
+            status: 'ACTIVE',
+          })
+          .onConflictDoUpdate({
+            target: [masterMemberships.identity_id, masterMemberships.tenant_id],
+            set: { status: 'ACTIVE', updated_at: new Date() },
+          });
+      }
+    }
+
     return await db.transaction(async (tx) => {
       const [newUser] = await tx
         .insert(usuarios)
@@ -549,6 +1408,7 @@ export class AuthService {
           password_hash,
           rol_id,
           personal_id: personal_id || null,
+          identity_id: identityId,
         })
         .returning({
           id: usuarios.id,
@@ -693,12 +1553,51 @@ export class AuthService {
             rol_id: usuarios.rol_id,
             personal_id: usuarios.personal_id,
             activo: usuarios.activo,
+            identity_id: usuarios.identity_id,
             created_at: usuarios.created_at,
             updated_at: usuarios.updated_at,
           });
 
         if (!updated) {
           throw new Error('Usuario no encontrado');
+        }
+
+        // Sincronizar en Master DB
+        if (updated.identity_id) {
+          if (updateData.password_hash) {
+            await masterDb
+              .update(masterIdentities)
+              .set({
+                password_hash: updateData.password_hash,
+                password_changed_at: new Date(),
+              })
+              .where(eq(masterIdentities.id, updated.identity_id));
+          }
+
+          if (updateData.activo !== undefined) {
+            let currentTenantId: string | null = null;
+            try {
+              const ctx = getTenantContext();
+              currentTenantId = ctx?.tenantId || null;
+            } catch {
+              currentTenantId = null;
+            }
+
+            if (currentTenantId) {
+              await masterDb
+                .update(masterMemberships)
+                .set({
+                  status: updateData.activo ? 'ACTIVE' : 'SUSPENDED',
+                  updated_at: new Date(),
+                })
+                .where(
+                  and(
+                    eq(masterMemberships.identity_id, updated.identity_id),
+                    eq(masterMemberships.tenant_id, currentTenantId)
+                  )
+                );
+            }
+          }
         }
 
         return updated as any;
@@ -727,14 +1626,36 @@ export class AuthService {
    * Eliminar usuario (soft delete)
    */
   async deleteUser(id: number): Promise<void> {
-    const rows = await db
+    const [user] = await db
       .update(usuarios)
       .set({ activo: false, updated_at: sql`CURRENT_TIMESTAMP` as any })
       .where(eq(usuarios.id, id))
-      .returning({ id: usuarios.id });
+      .returning({ id: usuarios.id, identity_id: usuarios.identity_id });
 
-    if (rows.length === 0) {
+    if (!user) {
       throw new Error('Usuario no encontrado');
+    }
+
+    if (user.identity_id) {
+      let currentTenantId: string | null = null;
+      try {
+        const ctx = getTenantContext();
+        currentTenantId = ctx?.tenantId || null;
+      } catch {
+        currentTenantId = null;
+      }
+
+      if (currentTenantId) {
+        await masterDb
+          .update(masterMemberships)
+          .set({ status: 'SUSPENDED', updated_at: new Date() })
+          .where(
+            and(
+              eq(masterMemberships.identity_id, user.identity_id),
+              eq(masterMemberships.tenant_id, currentTenantId)
+            )
+          );
+      }
     }
   }
 
@@ -768,6 +1689,28 @@ export class AuthService {
     return jwt.sign(payload, process.env.JWT_REFRESH_SECRET || 'refresh_secret', {
       expiresIn: (process.env.JWT_REFRESH_EXPIRES_IN || '7d') as string,
     } as jwt.SignOptions);
+  }
+
+  async recordAuthEvent(
+    event: string,
+    identityId?: string | null,
+    tenantId?: string | null,
+    ip?: string | null,
+    userAgent?: string | null,
+    detail?: any
+  ): Promise<void> {
+    try {
+      await masterDb.insert(masterAuthEvents).values({
+        event,
+        identity_id: identityId || null,
+        tenant_id: tenantId || null,
+        ip: ip || null,
+        user_agent: userAgent || null,
+        detail: detail || null,
+      });
+    } catch (err) {
+      console.warn('⚠️ Error al registrar auth_event en Master DB:', err);
+    }
   }
 }
 

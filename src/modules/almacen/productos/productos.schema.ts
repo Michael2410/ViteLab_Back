@@ -1,11 +1,12 @@
 import { z } from 'zod';
+import { zMultiNumber } from '../shared/almacen.filters';
 
 const id = z.coerce.number().int().positive('ID inválido');
 
 export const listarProductosSchema = z.object({
   query: z.object({
     search: z.string().trim().max(100).optional(),
-    categoria_id: z.coerce.number().int().positive().optional(),
+    categoria_id: zMultiNumber(),
     activo: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(1000).default(20),

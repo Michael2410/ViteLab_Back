@@ -18,11 +18,21 @@ export class PersonalController {
     try {
       const { search, cargo, cargo_id, area, area_id, tipo_contrato_id, activo, sede_id, con_usuario } = req.query;
 
+      const parseMultiString = (val: any): string[] | undefined => {
+        if (!val) return undefined;
+        if (Array.isArray(val)) {
+          const arr = val.map(String).map((s) => s.trim()).filter(Boolean);
+          return arr.length > 0 ? arr : undefined;
+        }
+        const arr = String(val).split(',').map((s) => s.trim()).filter(Boolean);
+        return arr.length > 0 ? arr : undefined;
+      };
+
       const filtros = {
         search: search ? String(search) : undefined,
-        cargo: cargo ? String(cargo) : undefined,
+        cargo: parseMultiString(cargo),
         cargo_id: cargo_id ? parseInt(String(cargo_id)) : undefined,
-        area: area ? String(area) : undefined,
+        area: parseMultiString(area),
         area_id: area_id ? parseInt(String(area_id)) : undefined,
         tipo_contrato_id: tipo_contrato_id ? parseInt(String(tipo_contrato_id)) : undefined,
         activo: activo !== undefined ? activo === 'true' : undefined,

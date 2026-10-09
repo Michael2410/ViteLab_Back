@@ -3,14 +3,19 @@ import { reportesService } from './reportes.service';
 import { db, usuariosSedes } from '../../../db';
 import { eq } from 'drizzle-orm';
 import { successResponse, errorResponse } from '../../../utils/response.utils';
-import type { FiltrosReporte } from './reportes.types';
+import type { FiltrosReporte, FiltrosCuadreCaja } from './reportes.types';
 
 class ReportesController {
   /**
    * Obtener sedes del usuario para filtros
    */
-  private async getSedesUsuario(usuarioId?: number): Promise<number[] | undefined> {
+  private async getSedesUsuario(usuarioId?: number, rolId?: number): Promise<number[] | undefined> {
     if (!usuarioId) return undefined;
+    
+    // Si el usuario es Administrador (rol_id = 1), tiene acceso a todas las sedes
+    if (rolId === 1) {
+      return undefined;
+    }
     
     const result = await db
       .select({ sedeId: usuariosSedes.sede_id })
@@ -28,14 +33,17 @@ class ReportesController {
    */
   async getOrdenesPorPeriodo(req: Request, res: Response): Promise<void> {
     try {
-      const sedesUsuario = await this.getSedesUsuario(req.user?.userId);
+      const sedeIdQuery = req.query.sede_id ? parseInt(req.query.sede_id as string) : undefined;
+      const sedesUsuario = sedeIdQuery ? undefined : await this.getSedesUsuario(req.user?.userId, req.user?.rolId);
       
       const filtros: FiltrosReporte = {
         fecha_inicio: req.query.fecha_inicio as string,
         fecha_fin: req.query.fecha_fin as string,
-        sede_id: req.query.sede_id ? parseInt(req.query.sede_id as string) : undefined,
+        sede_id: sedeIdQuery,
         sede_ids: sedesUsuario,
         estado: req.query.estado as string,
+        metodo_pago: req.query.metodo_pago as string,
+        usuario_registro_id: req.query.usuario_registro_id ? parseInt(req.query.usuario_registro_id as string) : (req.query.usuario_id ? parseInt(req.query.usuario_id as string) : undefined),
       };
 
       const reporte = await reportesService.getOrdenesPorPeriodo(filtros);
@@ -47,12 +55,36 @@ class ReportesController {
   }
 
   /**
+   * Reporte de Cuadre de Caja Diaria
+   * GET /api/reportes/cuadre-caja
+   */
+  async getCuadreCaja(req: Request, res: Response): Promise<void> {
+    try {
+      const sedeIdQuery = req.query.sede_id ? parseInt(req.query.sede_id as string) : undefined;
+      const sedesUsuario = sedeIdQuery ? undefined : await this.getSedesUsuario(req.user?.userId, req.user?.rolId);
+
+      const filtros: FiltrosCuadreCaja = {
+        fecha: req.query.fecha as string,
+        sede_id: sedeIdQuery,
+        sede_ids: sedesUsuario,
+        usuario_id: req.query.usuario_id ? parseInt(req.query.usuario_id as string) : undefined,
+      };
+
+      const reporte = await reportesService.getCuadreCaja(filtros);
+      successResponse(res, reporte, 'Cuadre de caja generado exitosamente');
+    } catch (error) {
+      console.error('Error en reporte cuadre de caja:', error);
+      errorResponse(res, 'Error al generar reporte de cuadre de caja', null, 500);
+    }
+  }
+
+  /**
    * Reporte de Ingresos por Sede
    * GET /api/reportes/ingresos-sede
    */
   async getIngresosPorSede(req: Request, res: Response): Promise<void> {
     try {
-      const sedesUsuario = await this.getSedesUsuario(req.user?.userId);
+      const sedesUsuario = await this.getSedesUsuario(req.user?.userId, req.user?.rolId);
       
       const filtros: FiltrosReporte = {
         fecha_inicio: req.query.fecha_inicio as string,
@@ -74,7 +106,7 @@ class ReportesController {
    */
   async getAnalisisRanking(req: Request, res: Response): Promise<void> {
     try {
-      const sedesUsuario = await this.getSedesUsuario(req.user?.userId);
+      const sedesUsuario = await this.getSedesUsuario(req.user?.userId, req.user?.rolId);
       
       const filtros: FiltrosReporte = {
         fecha_inicio: req.query.fecha_inicio as string,
@@ -96,7 +128,7 @@ class ReportesController {
    */
   async getProductividadUsuarios(req: Request, res: Response): Promise<void> {
     try {
-      const sedesUsuario = await this.getSedesUsuario(req.user?.userId);
+      const sedesUsuario = await this.getSedesUsuario(req.user?.userId, req.user?.rolId);
       
       const filtros: FiltrosReporte = {
         fecha_inicio: req.query.fecha_inicio as string,

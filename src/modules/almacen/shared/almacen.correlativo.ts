@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import type { DB } from '../../../db';
 import { almacenCorrelativos } from '../../../db';
 
-export type TipoCorrelativo = 'ING' | 'DES' | 'CON' | 'DEV' | 'PED' | 'TRA' | 'AJU';
+export type TipoCorrelativo = 'ING' | 'DES' | 'CON' | 'DEV' | 'PED' | 'TRA' | 'AJU' | 'OC';
 
 export async function obtenerSiguienteCorrelativo(
   tx: any,

@@ -1,10 +1,11 @@
-import { pgTable, index, foreignKey, unique, serial, varchar, integer, boolean, text, timestamp, numeric, date, char, check, time } from "drizzle-orm/pg-core"
+import { pgTable, index, foreignKey, unique, serial, varchar, integer, boolean, text, timestamp, numeric, date, char, check, time, uuid } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 
 
 export const usuarios = pgTable("usuarios", {
 	id: serial().primaryKey().notNull(),
+	identity_id: uuid("identity_id"),
 	username: varchar({ length: 50 }).notNull(),
 	email: varchar({ length: 100 }).notNull(),
 	password_hash: varchar("password_hash", { length: 255 }).notNull(),
@@ -421,6 +422,7 @@ export const ordenes = pgTable("ordenes", {
 	tipo_paciente: varchar("tipo_paciente", { length: 20 }).default('PARTICULAR'),
 	interpretacion_ia: text("interpretacion_ia"),
 	condiciones_preanaliticas: text("condiciones_preanaliticas"),
+	metodo_pago: varchar("metodo_pago", { length: 30 }).default('EFECTIVO').notNull(),
 }, (table) => [
 	index("idx_ordenes_estado").using("btree", table.estado.asc().nullsLast().op("text_ops")),
 	index("idx_ordenes_fecha_registro").using("btree", table.fecha_registro.asc().nullsLast().op("timestamp_ops")),
@@ -771,6 +773,11 @@ export const personalDocumentos = pgTable("personal_documentos", {
 	archivo_url: text("archivo_url"),
 	observaciones: text(),
 	emitido_por_id: integer("emitido_por_id"),
+	contenido_renderizado: text("contenido_renderizado"),
+	plantilla_id: integer("plantilla_id"),
+	firmante_nombre: varchar("firmante_nombre", { length: 150 }),
+	firmante_cargo: varchar("firmante_cargo", { length: 150 }),
+	firmante_firma_url: text("firmante_firma_url"),
 	created_at: timestamp("created_at", { mode: 'string' }).default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
 	index("idx_documentos_codigo").using("btree", table.codigo_emision.asc().nullsLast().op("text_ops")),
@@ -787,4 +794,23 @@ export const personalDocumentos = pgTable("personal_documentos", {
 			name: "personal_documentos_emitido_por_id_fkey"
 		}).onDelete("set null"),
 	unique("personal_documentos_codigo_emision_key").on(table.codigo_emision),
+]);
+
+export const personalPlantillasDocumentos = pgTable("personal_plantillas_documentos", {
+	id: serial().primaryKey().notNull(),
+	tipo_documento: varchar("tipo_documento", { length: 50 }).notNull(),
+	nombre: varchar("nombre", { length: 150 }).notNull(),
+	titulo_documento: varchar("titulo_documento", { length: 150 }).notNull(),
+	cuerpo_template: text("cuerpo_template").notNull(),
+	parrafo_cierre: text("parrafo_cierre"),
+	ciudad_defecto: varchar("ciudad_defecto", { length: 100 }).default('LIMA'),
+	mostrar_logo: boolean("mostrar_logo").default(true),
+	firmante_nombre: varchar("firmante_nombre", { length: 150 }),
+	firmante_cargo: varchar("firmante_cargo", { length: 150 }),
+	firmante_firma_url: text("firmante_firma_url"),
+	activo: boolean("activo").default(true),
+	created_at: timestamp("created_at", { mode: 'string' }).default(sql`CURRENT_TIMESTAMP`),
+	updated_at: timestamp("updated_at", { mode: 'string' }).default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+	unique("personal_plantillas_documentos_tipo_documento_key").on(table.tipo_documento),
 ]);

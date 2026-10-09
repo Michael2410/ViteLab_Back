@@ -153,6 +153,7 @@ export const almacenIngresos = almacenSchema.table('ingresos', {
     .notNull()
     .references(() => almacenAlmacenes.id),
   proveedor_id: integer('proveedor_id').references(() => almacenProveedores.id),
+  orden_compra_id: integer('orden_compra_id').references(() => almacenOrdenesCompra.id),
   tipo_documento: varchar('tipo_documento', { length: 20 }).default('FACTURA').notNull(),
   serie_documento: varchar('serie_documento', { length: 20 }),
   numero_documento: varchar('numero_documento', { length: 30 }),
@@ -185,6 +186,7 @@ export const almacenIngresoDetalle = almacenSchema.table('ingreso_detalle', {
     .notNull()
     .references(() => almacenLotes.id),
   ubicacion_id: integer('ubicacion_id').references(() => almacenUbicaciones.id),
+  orden_compra_detalle_id: integer('orden_compra_detalle_id').references(() => almacenOrdenCompraDetalle.id),
   cantidad: cantidad('cantidad').notNull(),
   costo_unitario: costo('costo_unitario').default(0).notNull(),
   legacy_id: varchar('legacy_id', { length: 50 }),
@@ -203,6 +205,7 @@ export const almacenStock = almacenSchema.table('stock', {
   lote_id: integer('lote_id')
     .notNull()
     .references(() => almacenLotes.id),
+  ubicacion_id: integer('ubicacion_id').references(() => almacenUbicaciones.id),
   cantidad: cantidad('cantidad').default(0).notNull(),
   updated_at: timestamp('updated_at', { mode: 'string' }).default(sql`CURRENT_TIMESTAMP`),
 });
@@ -223,6 +226,7 @@ export const almacenMovimientos = almacenSchema.table('movimientos', {
   lote_id: integer('lote_id')
     .notNull()
     .references(() => almacenLotes.id),
+  ubicacion_id: integer('ubicacion_id').references(() => almacenUbicaciones.id),
   cantidad: cantidad('cantidad').notNull(),
   costo_unitario: costo('costo_unitario'),
   documento_tipo: varchar('documento_tipo', { length: 20 }).notNull(),
@@ -498,5 +502,51 @@ export const almacenAjusteDetalle = almacenSchema.table('ajuste_detalle', {
   sentido: varchar({ length: 10 }).notNull(),
   costo_unitario: costo('costo_unitario').default(0),
   observacion: text(),
+});
+
+// 26. ORDENES DE COMPRA
+export const almacenOrdenesCompra = almacenSchema.table('ordenes_compra', {
+  id: serial().primaryKey(),
+  numero: varchar({ length: 30 }).notNull().unique(),
+  sede_id: integer('sede_id')
+    .notNull()
+    .references(() => sedes.id),
+  proveedor_id: integer('proveedor_id')
+    .notNull()
+    .references(() => almacenProveedores.id),
+  almacen_destino_id: integer('almacen_destino_id').references(() => almacenAlmacenes.id),
+  fecha_emision: date('fecha_emision').default(sql`CURRENT_DATE`).notNull(),
+  fecha_entrega_esperada: date('fecha_entrega_esperada'),
+  moneda: varchar({ length: 3 }).default('PEN').notNull(),
+  condicion_pago: varchar({ length: 50 }).default('CONTADO'),
+  estado: varchar({ length: 20 }).default('PENDIENTE').notNull(),
+  subtotal: numeric('subtotal', { precision: 14, scale: 4, mode: 'number' }).default(0).notNull(),
+  igv: numeric('igv', { precision: 14, scale: 4, mode: 'number' }).default(0).notNull(),
+  total: numeric('total', { precision: 14, scale: 4, mode: 'number' }).default(0).notNull(),
+  observaciones: text(),
+  motivo_anulacion: text('motivo_anulacion'),
+  usuario_registro_id: integer('usuario_registro_id')
+    .notNull()
+    .references(() => usuarios.id),
+  usuario_anulacion_id: integer('usuario_anulacion_id').references(() => usuarios.id),
+  fecha_anulacion: timestamp('fecha_anulacion', { mode: 'string' }),
+  ...auditoria,
+});
+
+// 27. ORDEN DE COMPRA DETALLE
+export const almacenOrdenCompraDetalle = almacenSchema.table('orden_compra_detalle', {
+  id: serial().primaryKey(),
+  orden_compra_id: integer('orden_compra_id')
+    .notNull()
+    .references(() => almacenOrdenesCompra.id, { onDelete: 'cascade' }),
+  producto_id: integer('producto_id')
+    .notNull()
+    .references(() => almacenProductos.id),
+  cantidad_solicitada: cantidad('cantidad_solicitada').notNull(),
+  cantidad_recibida: cantidad('cantidad_recibida').default(0).notNull(),
+  precio_unitario: costo('precio_unitario').default(0).notNull(),
+  subtotal: numeric('subtotal', { precision: 14, scale: 4, mode: 'number' }).default(0).notNull(),
+  observaciones: text(),
+  created_at: timestamp('created_at', { mode: 'string' }).default(sql`CURRENT_TIMESTAMP`),
 });
 

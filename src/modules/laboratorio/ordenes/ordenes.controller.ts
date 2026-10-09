@@ -102,9 +102,25 @@ export class OrdenesController {
         }
       }
       
+      const parsearValores = (val: any): string[] => {
+        if (!val) return [];
+        if (Array.isArray(val)) return val.map(String).map((s) => s.trim()).filter(Boolean);
+        if (typeof val === 'string') {
+          return val.includes(',') ? val.split(',').map((s) => s.trim()).filter(Boolean) : [val.trim()];
+        }
+        return [];
+      };
+
+      const estadosRaw = parsearValores(req.query.estado || req.query['estado[]'] || req.query.estados) as EstadoOrden[];
+      const sedesRaw = parsearValores(req.query.sede_id || req.query['sede_id[]'] || req.query.sedes_filtro)
+        .map(Number)
+        .filter((n) => !isNaN(n));
+
       const filters = {
-        estado: req.query.estado as EstadoOrden | undefined,
-        sede_id: req.query.sede_id ? parseInt(req.query.sede_id as string) : undefined,
+        estado: estadosRaw.length === 1 ? estadosRaw[0] : undefined,
+        estados: estadosRaw.length > 0 ? estadosRaw : undefined,
+        sede_id: sedesRaw.length === 1 ? sedesRaw[0] : undefined,
+        sedes_filtro: sedesRaw.length > 0 ? sedesRaw : undefined,
         sede_ids: sedesUsuario, // Filtrar por sedes del usuario
         fecha_desde: req.query.fecha_desde ? new Date(req.query.fecha_desde as string) : undefined,
         fecha_hasta: req.query.fecha_hasta ? new Date(req.query.fecha_hasta as string) : undefined,

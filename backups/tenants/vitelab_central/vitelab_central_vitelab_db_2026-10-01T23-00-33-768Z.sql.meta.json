@@ -1,0 +1,8 @@
+{
+  "tenantSlug": "vitelab_central",
+  "databaseName": "vitelab_db",
+  "backupFile": "C:\\Users\\Michael Gomez - MS4M\\Documents\\Proyectos React\\ViteLab\\ViteLab-Back\\backups\\tenants\\vitelab_central\\vitelab_central_vitelab_db_2026-10-01T23-00-33-768Z.sql",
+  "fileSizeBytes": 138,
+  "checksumSha256": "1b2b5a7a9d4b079562e0d9e22d6acbb958aa0ce1594eaaa4fe1916dbee510afd",
+  "createdAt": "2026-10-01T23:00:33.791Z"
+}

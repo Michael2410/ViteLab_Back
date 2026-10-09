@@ -17,6 +17,7 @@ import {
   areas,
 } from '../../../db';
 import { AlmacenError } from '../shared/almacen.errors';
+import { buildMultiFilter } from '../shared/almacen.filters';
 import { obtenerSiguienteCorrelativo } from '../shared/almacen.correlativo';
 import type { Paginado } from '../shared/almacen.types';
 import type {
@@ -33,9 +34,11 @@ export class AlmacenDespachosService {
   ): Promise<Paginado<AlmacenDespachoCompleto>> {
     const conditions: (SQL | undefined)[] = [];
 
-    if (f.almacen_id) conditions.push(eq(almacenDespachos.almacen_id, f.almacen_id));
+    const cAlmacen = buildMultiFilter(almacenDespachos.almacen_id, f.almacen_id);
+    if (cAlmacen) conditions.push(cAlmacen);
     if (f.receptor_personal_id) conditions.push(eq(almacenDespachos.receptor_personal_id, f.receptor_personal_id));
-    if (f.estado) conditions.push(eq(almacenDespachos.estado, f.estado));
+    const cEstado = buildMultiFilter(almacenDespachos.estado, f.estado);
+    if (cEstado) conditions.push(cEstado);
     if (f.fecha_desde) conditions.push(gte(almacenDespachos.fecha, `${f.fecha_desde} 00:00:00`));
     if (f.fecha_hasta) conditions.push(lte(almacenDespachos.fecha, `${f.fecha_hasta} 23:59:59`));
 

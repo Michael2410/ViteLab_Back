@@ -41,6 +41,6 @@ export interface FiltrosAsistencia {
   fecha_desde?: string;
   fecha_hasta?: string;
   personal_id?: number;
-  estado?: EstadoAsistencia;
+  estado?: EstadoAsistencia | EstadoAsistencia[] | string | string[];
   search?: string;
 }

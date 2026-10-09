@@ -125,12 +125,12 @@ export interface UpdateCuentaPersonalDTO {
 
 export interface FiltrosPersonal {
   search?: string;
-  cargo?: string;
-  cargo_id?: number;
-  area?: string;
-  area_id?: number;
-  tipo_contrato_id?: number;
+  cargo?: string | string[];
+  cargo_id?: number | number[];
+  area?: string | string[];
+  area_id?: number | number[];
+  tipo_contrato_id?: number | number[];
   activo?: boolean;
-  sede_id?: number;
+  sede_id?: number | number[];
   con_usuario?: boolean;
 }

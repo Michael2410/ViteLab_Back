@@ -128,3 +128,20 @@ Para demostraciones públicas 24/7 sin costo y sin necesidad de mantener encendi
 5. Haz clic en **Deploy Web Service**.
 
 > Render te otorgará una URL pública HTTPS directa (ejemplo: `https://vitelab-api.onrender.com`).
+
+---
+
+## Comandos utiles
+
+### Migraciones de la base de datos central (Master)
+npm run db:migrate:master
+### Ver estado de migraciones de todos los tenants registrados
+npm run db:migrate:status
+### Ejecutar migraciones pendientes en todos los tenants (ACTIVE y SUSPENDED)
+npm run db:migrate:tenants
+### Ejecutar migraciones en un tenant específico
+npm run db:migrate:tenants -- --tenant=lab_demo
+### Simulación sin aplicar cambios
+npm run db:migrate:tenants -- --dry-run
+### Aprovisionar un nuevo laboratorio desde CLI
+npm run db:provision:tenant -- --slug=vitelab_sec --name="vitelab_secu" --admin-email=admin@vitelab.com --admin-password=admin123

@@ -1,0 +1,4 @@
+-- ViteLab Fallback Logical Backup
+-- Tenant: vitelab_central (ViteLab Central)
+-- Database: vitelab_db
+-- Date: 2026-10-01T03:48:48.138Z

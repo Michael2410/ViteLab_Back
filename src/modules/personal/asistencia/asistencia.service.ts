@@ -1,4 +1,4 @@
-import { eq, and, gte, lte, asc, desc, sql } from 'drizzle-orm';
+import { eq, and, gte, lte, asc, desc, sql, inArray } from 'drizzle-orm';
 import {
   db,
   personalAsistencia,
@@ -37,7 +37,15 @@ export class AsistenciaService {
     }
 
     if (filtros.estado) {
-      conditions.push(eq(personalAsistencia.estado, filtros.estado));
+      if (Array.isArray(filtros.estado)) {
+        if (filtros.estado.length === 1) {
+          conditions.push(eq(personalAsistencia.estado, filtros.estado[0] as any));
+        } else if (filtros.estado.length > 1) {
+          conditions.push(inArray(personalAsistencia.estado, filtros.estado as any[]));
+        }
+      } else {
+        conditions.push(eq(personalAsistencia.estado, filtros.estado as any));
+      }
     }
 
     if (filtros.search) {

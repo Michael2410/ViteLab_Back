@@ -12,6 +12,7 @@ import {
   usuarios,
 } from '../../../db';
 import { AlmacenError } from '../shared/almacen.errors';
+import { buildMultiFilter } from '../shared/almacen.filters';
 import { obtenerSiguienteCorrelativo } from '../shared/almacen.correlativo';
 import type { Paginado } from '../shared/almacen.types';
 import type {
@@ -28,9 +29,12 @@ export class AlmacenAjustesService {
   ): Promise<Paginado<AlmacenAjusteCompleto>> {
     const conditions: (SQL | undefined)[] = [];
 
-    if (f.almacen_id) conditions.push(eq(almacenAjustes.almacen_id, f.almacen_id));
-    if (f.tipo) conditions.push(eq(almacenAjustes.tipo, f.tipo));
-    if (f.estado) conditions.push(eq(almacenAjustes.estado, f.estado));
+    const cAlmacen = buildMultiFilter(almacenAjustes.almacen_id, f.almacen_id);
+    if (cAlmacen) conditions.push(cAlmacen);
+    const cTipo = buildMultiFilter(almacenAjustes.tipo, f.tipo);
+    if (cTipo) conditions.push(cTipo);
+    const cEstado = buildMultiFilter(almacenAjustes.estado, f.estado);
+    if (cEstado) conditions.push(cEstado);
     if (f.fecha_desde) conditions.push(gte(almacenAjustes.created_at, `${f.fecha_desde} 00:00:00`));
     if (f.fecha_hasta) conditions.push(lte(almacenAjustes.created_at, `${f.fecha_hasta} 23:59:59`));
 
@@ -141,6 +145,7 @@ export class AlmacenAjustesService {
         unidad_medida_codigo: almacenUnidadesMedida.codigo,
         unidad_medida_nombre: almacenUnidadesMedida.nombre,
         numero_lote: almacenLotes.numero_lote,
+        marca: almacenLotes.marca,
         fecha_vencimiento: almacenLotes.fecha_vencimiento,
       })
       .from(almacenAjusteDetalle)
@@ -272,7 +277,7 @@ export class AlmacenAjustesService {
             almacen_id: actual.almacen_id,
             producto_id: item.producto_id,
             lote_id: item.lote_id,
-            cantidad: -item.cantidad,
+            cantidad: item.cantidad,
             documento_tipo: 'AJUSTE',
             documento_id: actual.id,
             observacion: `Ajuste/Baja: ${actual.tipo} (${actual.motivo || '-'}) - ${item.observacion || ''}`,

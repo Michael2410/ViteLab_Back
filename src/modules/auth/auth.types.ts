@@ -31,8 +31,17 @@ export interface LoginCredentials {
   password: string;
 }
 
+export interface TenantSummary {
+  id: string;
+  slug: string;
+  name: string;
+  role?: string;
+  isOwner?: boolean;
+}
+
 export interface Login2FARequiredResponse {
   requires2FA: true;
+  requiresTenantSelection?: false;
   setupNeeded: boolean;
   tempToken: string;
   qrCodeDataUrl?: string;
@@ -40,15 +49,48 @@ export interface Login2FARequiredResponse {
   emailMasked?: string;
 }
 
+export interface LoginTenantRequiredResponse {
+  requiresTenantSelection: true;
+  requires2FA?: false;
+  requiresPasswordChange?: false;
+  tempToken: string;
+  tenants: TenantSummary[];
+}
+
+export interface LoginPasswordChangeRequiredResponse {
+  requiresPasswordChange: true;
+  requires2FA?: false;
+  requiresTenantSelection?: false;
+  tempToken: string;
+  email: string;
+  nombres?: string;
+}
+
 export interface LoginSuccessResponse {
   requires2FA?: false;
+  requiresTenantSelection?: false;
+  requiresPasswordChange?: false;
   user: Omit<UsuarioConRol, 'password_hash' | 'refresh_token' | 'refresh_token_expires_at'>;
+  activeTenant?: TenantSummary;
   accessToken: string;
   refreshToken: string;
   backupCodes?: string[];
 }
 
-export type LoginResponse = LoginSuccessResponse | Login2FARequiredResponse;
+export type LoginResponse =
+  | LoginSuccessResponse
+  | Login2FARequiredResponse
+  | LoginTenantRequiredResponse
+  | LoginPasswordChangeRequiredResponse;
+
+export interface SelectTenantRequest {
+  tempToken: string;
+  tenantId: string;
+}
+
+export interface SwitchTenantRequest {
+  tenantId: string;
+}
 
 export interface Verify2FARequest {
   tempToken: string;
@@ -60,11 +102,22 @@ export interface Confirm2FASetupRequest {
   code: string;
 }
 
+export interface ChangeInitialPasswordRequest {
+  tempToken: string;
+  newPassword: string;
+}
+
+export interface ResetUserPasswordRequest {
+  newPassword?: string;
+}
+
 export interface TwoFactorJwtPayload {
-  userId: number;
-  username: string;
+  userId?: number;
+  username?: string;
   email: string;
-  stage: '2fa_pending' | '2fa_setup_pending';
+  stage: '2fa_pending' | '2fa_setup_pending' | 'tenant_selection' | 'password_change_pending';
+  identityId?: string;
+  tenantId?: string;
 }
 
 export interface RefreshTokenRequest {
@@ -77,10 +130,14 @@ export interface RefreshTokenResponse {
 }
 
 export interface JwtPayload {
-  userId: number;
+  userId: number; // SERIAL en BD de tenant
   username: string;
   email: string;
   rolId: number;
+  sub?: string; // UUID de identidad en Master
+  tenantId?: string; // UUID de tenant en Master
+  sessionId?: string; // UUID de sesión en Master
+  scope?: string; // 'tenant'
 }
 
 export interface CreateUserRequest {

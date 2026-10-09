@@ -10,6 +10,13 @@
 -- 1. CREAR TABLA DE CONFIGURACIÓN
 -- ============================================
 
+DO $$ 
+BEGIN 
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'configuracion_sistema' AND column_name = 'clave') THEN
+    DROP TABLE configuracion_sistema CASCADE;
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS configuracion_sistema (
     id SERIAL PRIMARY KEY,
     -- Datos de la empresa

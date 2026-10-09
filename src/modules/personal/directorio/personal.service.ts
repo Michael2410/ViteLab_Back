@@ -14,6 +14,8 @@ import {
   usuariosSedes,
   personalHistorialLaboral,
 } from '../../../db';
+import { masterDb, masterIdentities, masterMemberships } from '../../../db/master';
+import { getTenantContext } from '../../../db/tenant-context';
 import {
   Personal,
   CreatePersonalDTO,
@@ -137,23 +139,53 @@ export class PersonalService {
     }
 
     if (filtros.cargo_id) {
-      conditions.push(eq(personal.cargo_id, filtros.cargo_id));
+      if (Array.isArray(filtros.cargo_id)) {
+        conditions.push(inArray(personal.cargo_id, filtros.cargo_id));
+      } else {
+        conditions.push(eq(personal.cargo_id, filtros.cargo_id));
+      }
     } else if (filtros.cargo) {
-      conditions.push(
-        or(eq(personal.cargo, filtros.cargo), eq(personalCargos.nombre, filtros.cargo))
-      );
+      const cargos = Array.isArray(filtros.cargo)
+        ? filtros.cargo
+        : [filtros.cargo];
+      if (cargos.length === 1) {
+        conditions.push(
+          or(eq(personal.cargo, cargos[0]), eq(personalCargos.nombre, cargos[0]))
+        );
+      } else if (cargos.length > 1) {
+        conditions.push(
+          or(inArray(personal.cargo, cargos), inArray(personalCargos.nombre, cargos))
+        );
+      }
     }
 
     if (filtros.area_id) {
-      conditions.push(eq(personal.area_id, filtros.area_id));
+      if (Array.isArray(filtros.area_id)) {
+        conditions.push(inArray(personal.area_id, filtros.area_id));
+      } else {
+        conditions.push(eq(personal.area_id, filtros.area_id));
+      }
     } else if (filtros.area) {
-      conditions.push(
-        or(eq(personal.area, filtros.area), eq(personalAreas.nombre, filtros.area))
-      );
+      const areas = Array.isArray(filtros.area)
+        ? filtros.area
+        : [filtros.area];
+      if (areas.length === 1) {
+        conditions.push(
+          or(eq(personal.area, areas[0]), eq(personalAreas.nombre, areas[0]))
+        );
+      } else if (areas.length > 1) {
+        conditions.push(
+          or(inArray(personal.area, areas), inArray(personalAreas.nombre, areas))
+        );
+      }
     }
 
     if (filtros.tipo_contrato_id) {
-      conditions.push(eq(personal.tipo_contrato_id, filtros.tipo_contrato_id));
+      if (Array.isArray(filtros.tipo_contrato_id)) {
+        conditions.push(inArray(personal.tipo_contrato_id, filtros.tipo_contrato_id));
+      } else {
+        conditions.push(eq(personal.tipo_contrato_id, filtros.tipo_contrato_id));
+      }
     }
 
     if (filtros.search) {
@@ -481,6 +513,54 @@ export class PersonalService {
 
         const password_hash = await bcrypt.hash(password, 10);
 
+        // Sincronizar o crear identidad en Master DB con cambio obligatorio de contraseña
+        let identityId: string | null = null;
+        try {
+          const cleanEmail = email.trim().toLowerCase();
+          const [existingIdentity] = await masterDb
+            .select()
+            .from(masterIdentities)
+            .where(eq(masterIdentities.email, cleanEmail));
+
+          if (existingIdentity) {
+            identityId = existingIdentity.id;
+          } else {
+            const [newIdentity] = await masterDb
+              .insert(masterIdentities)
+              .values({
+                email: cleanEmail,
+                password_hash,
+                status: 'ACTIVE',
+                email_verified_at: new Date(),
+                must_change_password: true,
+              })
+              .returning({ id: masterIdentities.id });
+            identityId = newIdentity.id;
+          }
+
+          let currentTenantId: string | null = null;
+          try {
+            const ctx = getTenantContext();
+            currentTenantId = ctx?.tenantId || null;
+          } catch {
+            currentTenantId = null;
+          }
+
+          if (currentTenantId && identityId) {
+            await masterDb
+              .insert(masterMemberships)
+              .values({
+                identity_id: identityId,
+                tenant_id: currentTenantId,
+                status: 'ACTIVE',
+                accepted_at: new Date(),
+              })
+              .onConflictDoNothing();
+          }
+        } catch (mErr) {
+          console.warn('⚠️ No se pudo sincronizar identidad en Master DB desde personal.service:', mErr);
+        }
+
         const [newUser] = await tx
           .insert(usuarios)
           .values({
@@ -489,6 +569,7 @@ export class PersonalService {
             password_hash,
             rol_id,
             personal_id: newPersonal.id,
+            identity_id: identityId,
           })
           .returning({ id: usuarios.id });
 

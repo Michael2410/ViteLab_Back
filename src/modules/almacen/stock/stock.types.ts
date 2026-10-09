@@ -17,6 +17,10 @@ export interface StockItem {
   cantidad: number;
   total_lotes?: number;
   proximo_vencimiento?: string | null;
+  ubicacion_id?: number | null;
+  ubicacion_codigo?: string | null;
+  ubicacion_nombre?: string | null;
+  ubicaciones_str?: string | null;
 }
 
 export interface KardexItem {
@@ -35,6 +39,9 @@ export interface KardexItem {
   unidad_medida_codigo?: string | null;
   lote_id: number;
   numero_lote?: string | null;
+  ubicacion_id?: number | null;
+  ubicacion_codigo?: string | null;
+  ubicacion_nombre?: string | null;
   cantidad: number;
   costo_unitario?: number | null;
   documento_tipo: string;

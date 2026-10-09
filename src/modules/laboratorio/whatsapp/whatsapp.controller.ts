@@ -20,7 +20,17 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 export const startSession = async (_req: Request, res: Response) => {
   try {
     await whatsappService.startSession();
-    return successResponse(res, null, 'Sesión iniciada. Escanea el código QR.');
+    const serviceStatus = await whatsappService.getStatus();
+    return successResponse(
+      res,
+      {
+        state: whatsappService.getConnectionState(),
+        qr: serviceStatus.qr || null,
+        phoneNumber: serviceStatus.phoneNumber || null,
+        isConnected: serviceStatus.isConnected,
+      },
+      'Sesión iniciada. Escanea el código QR.'
+    );
   } catch (error: any) {
     console.error('Error al iniciar sesión WhatsApp:', error);
     return errorResponse(res, error.message || 'Error al iniciar sesión de WhatsApp', 500);
@@ -43,6 +53,8 @@ export const getStatus = async (_req: Request, res: Response) => {
       isConnected: serviceStatus.isConnected || dbStatus.isConnected || false,
       phoneNumber: serviceStatus.phoneNumber || dbStatus.phoneNumber || null,
       lastConnectedAt: dbStatus.lastConnectedAt || null,
+      state: whatsappService.getConnectionState(),
+      qr: serviceStatus.qr || null,
     };
     
     return successResponse(res, status);

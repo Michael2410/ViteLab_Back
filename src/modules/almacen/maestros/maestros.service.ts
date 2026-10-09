@@ -8,6 +8,7 @@ import {
   sedes,
 } from '../../../db';
 import { AlmacenError } from '../shared/almacen.errors';
+import { buildMultiFilter } from '../shared/almacen.filters';
 import type {
   UnidadMedidaInput,
   CategoriaInput,
@@ -316,9 +317,13 @@ export class AlmacenMaestrosService {
   // ==========================================
   // UBICACIONES
   // ==========================================
-  async listarUbicaciones(almacenId?: number, activo?: boolean): Promise<AlmacenUbicacion[]> {
+  async listarUbicaciones(almacenId?: number | number[], activo?: boolean): Promise<AlmacenUbicacion[]> {
     const conditions: (SQL | undefined)[] = [];
-    if (almacenId) conditions.push(eq(almacenUbicaciones.almacen_id, almacenId));
+    if (almacenId !== undefined) {
+      const ids = Array.isArray(almacenId) ? almacenId : [almacenId];
+      const cond = buildMultiFilter(almacenUbicaciones.almacen_id, ids);
+      if (cond) conditions.push(cond);
+    }
     if (activo !== undefined) conditions.push(eq(almacenUbicaciones.activo, activo));
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     return db.select().from(almacenUbicaciones).where(where).orderBy(asc(almacenUbicaciones.codigo));

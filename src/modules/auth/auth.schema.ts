@@ -49,6 +49,28 @@ export const confirm2FASetupSchema = z.object({
   code: z.string().min(6, 'El código de 6 dígitos es requerido').max(8),
 });
 
+// Schema para seleccionar tenant en multi-membresía
+export const selectTenantSchema = z.object({
+  tempToken: z.string().min(1, 'El token temporal es requerido'),
+  tenantId: z.string().uuid('ID de tenant inválido'),
+});
+
+// Schema para alternar entre laboratorios autenticado
+export const switchTenantSchema = z.object({
+  tenantId: z.string().uuid('ID de tenant inválido'),
+});
+
+// Schema para cambio obligatorio de contraseña inicial/provisional
+export const changeInitialPasswordSchema = z.object({
+  tempToken: z.string().min(1, 'El token temporal es requerido'),
+  newPassword: z.string().min(6, 'La nueva contraseña debe tener al menos 6 caracteres'),
+});
+
+// Schema para reseteo de contraseña por administrador
+export const resetUserPasswordSchema = z.object({
+  newPassword: z.string().min(6, 'La contraseña debe tener al menos 6 caracteres').optional(),
+});
+
 // Tipos inferidos de los schemas
 export type LoginInput = z.infer<typeof loginSchema>;
 export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>;
@@ -56,3 +78,7 @@ export type CreateUserInput = z.infer<typeof createUserSchema>;
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
 export type Verify2FAInput = z.infer<typeof verify2FASchema>;
 export type Confirm2FASetupInput = z.infer<typeof confirm2FASetupSchema>;
+export type SelectTenantInput = z.infer<typeof selectTenantSchema>;
+export type SwitchTenantInput = z.infer<typeof switchTenantSchema>;
+export type ChangeInitialPasswordInput = z.infer<typeof changeInitialPasswordSchema>;
+export type ResetUserPasswordInput = z.infer<typeof resetUserPasswordSchema>;

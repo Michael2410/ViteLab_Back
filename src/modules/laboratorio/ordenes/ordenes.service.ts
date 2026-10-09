@@ -113,6 +113,7 @@ export class OrdenesService {
           usuario_registro_id: usuarioId,
           muestra_recepcionada: false,
           medico: data.medico || null,
+          metodo_pago: data.metodo_pago || 'EFECTIVO',
         })
         .returning();
 
@@ -181,6 +182,7 @@ export class OrdenesService {
         usuario_aprobacion_id: ordenes.usuario_aprobacion_id,
         muestra_recepcionada: ordenes.muestra_recepcionada,
         condiciones_preanaliticas: ordenes.condiciones_preanaliticas,
+        metodo_pago: ordenes.metodo_pago,
         created_at: ordenes.created_at,
         updated_at: ordenes.updated_at,
         paciente: {
@@ -289,6 +291,7 @@ export class OrdenesService {
       fecha_aprobacion: row.fecha_aprobacion as any,
       nota: row.nota ?? undefined,
       condiciones_preanaliticas: row.condiciones_preanaliticas,
+      metodo_pago: row.metodo_pago ?? 'EFECTIVO',
       usuario_registro_id: row.usuario_registro_id,
       usuario_aprobacion_id: row.usuario_aprobacion_id ?? undefined,
       created_at: row.created_at as any,
@@ -374,6 +377,7 @@ export class OrdenesService {
       if (data.convenio_id !== undefined) updateData.convenio_id = data.convenio_id || null;
       if (data.medico !== undefined) updateData.medico = data.medico || null;
       if (data.nota !== undefined) updateData.nota = data.nota || null;
+      if (data.metodo_pago !== undefined) updateData.metodo_pago = data.metodo_pago;
 
       await tx
         .update(ordenes)
@@ -447,14 +451,22 @@ export class OrdenesService {
 
     const conditions = [];
 
-    if (filters.estado) {
+    if (filters.estados && filters.estados.length > 0) {
+      conditions.push(inArray(ordenes.estado, filters.estados));
+    } else if (filters.estado) {
       conditions.push(eq(ordenes.estado, filters.estado));
     }
-    if (filters.sede_id) {
-      conditions.push(eq(ordenes.sede_id, filters.sede_id));
-    }
+
+    const sedesSolicitadas = filters.sedes_filtro || (filters.sede_id ? [filters.sede_id] : undefined);
     if (filters.sede_ids && filters.sede_ids.length > 0) {
-      conditions.push(inArray(ordenes.sede_id, filters.sede_ids));
+      if (sedesSolicitadas && sedesSolicitadas.length > 0) {
+        const permitidas = sedesSolicitadas.filter((id) => filters.sede_ids!.includes(id));
+        conditions.push(inArray(ordenes.sede_id, permitidas.length > 0 ? permitidas : [-1]));
+      } else {
+        conditions.push(inArray(ordenes.sede_id, filters.sede_ids));
+      }
+    } else if (sedesSolicitadas && sedesSolicitadas.length > 0) {
+      conditions.push(inArray(ordenes.sede_id, sedesSolicitadas));
     }
     if (filters.fecha_desde) {
       conditions.push(gte(ordenes.fecha_registro, filters.fecha_desde as any));
@@ -504,6 +516,7 @@ export class OrdenesService {
         medico: ordenes.medico,
         usuario_registro_id: ordenes.usuario_registro_id,
         usuario_recepcion_id: ordenes.usuario_recepcion_id,
+        metodo_pago: ordenes.metodo_pago,
         created_at: ordenes.created_at,
         updated_at: ordenes.updated_at,
         paciente_dni: pacientes.dni,
@@ -528,6 +541,7 @@ export class OrdenesService {
       .where(whereClause)
       .groupBy(
         ordenes.id,
+        ordenes.metodo_pago,
         ordenes.muestra_recepcionada,
         ordenes.condiciones_preanaliticas,
         ordenes.medico,

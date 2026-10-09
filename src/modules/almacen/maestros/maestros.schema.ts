@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { zMultiNumber } from '../shared/almacen.filters';
 
 const id = z.coerce.number().int().positive('ID inválido');
 
@@ -58,7 +59,7 @@ const ubicacionBody = z.object({
 });
 export const listarUbicacionesSchema = z.object({
   query: z.object({
-    almacen_id: z.coerce.number().int().positive().optional(),
+    almacen_id: zMultiNumber(),
     activo: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
   }),
 });

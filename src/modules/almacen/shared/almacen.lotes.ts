@@ -28,9 +28,9 @@ export async function resolverOCrearLote(
     throw new AlmacenError(`El producto ID ${productoId} no existe`, 404);
   }
 
-  const numLote = datos.numero_lote?.trim() || null;
+  const numLote = datos.numero_lote?.trim().toUpperCase() || null;
   const fVenc = datos.fecha_vencimiento?.trim() || null;
-  const marca = datos.marca?.trim() || null;
+  const marca = datos.marca?.trim().toUpperCase() || null;
   const fFab = datos.fecha_fabricacion?.trim() || null;
 
   if (prod.controla_lote && !numLote) {

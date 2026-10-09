@@ -11,6 +11,7 @@ import { consumosRouter } from './consumos';
 import { pedidosRouter } from './pedidos';
 import { transferenciasRouter } from './transferencias';
 import { ajustesRouter } from './ajustes';
+import { ordenesCompraRouter } from './ordenes-compra';
 import { almacenErrorHandler } from './shared/almacen.error-handler';
 
 const router = Router();
@@ -21,6 +22,7 @@ router.use(authenticateToken);
 router.use('/productos', productosRouter);
 router.use('/proveedores', proveedoresRouter);
 router.use('/maestros', maestrosRouter);
+router.use('/ordenes-compra', ordenesCompraRouter);
 router.use('/ingresos', ingresosRouter);
 router.use('/stock', stockRouter);
 router.use('/despachos', despachosRouter);

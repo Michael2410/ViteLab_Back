@@ -1,6 +1,7 @@
 import { and, asc, count, eq, ilike, or, type SQL } from 'drizzle-orm';
 import { db, almacenProductos, almacenCategorias, almacenUnidadesMedida } from '../../../db';
 import { AlmacenError } from '../shared/almacen.errors';
+import { buildMultiFilter } from '../shared/almacen.filters';
 import type { Paginado } from '../shared/almacen.types';
 import type { ListarProductosQuery, CrearProductoInput, ActualizarProductoInput } from './productos.schema';
 import type { AlmacenProducto, AlmacenProductoListado } from './productos.types';
@@ -12,7 +13,8 @@ export class AlmacenProductosService {
       const s = `%${f.search}%`;
       conditions.push(or(ilike(almacenProductos.nombre, s), ilike(almacenProductos.codigo, s)));
     }
-    if (f.categoria_id) conditions.push(eq(almacenProductos.categoria_id, f.categoria_id));
+    const cCat = buildMultiFilter(almacenProductos.categoria_id, f.categoria_id);
+    if (cCat) conditions.push(cCat);
     if (f.activo !== undefined) conditions.push(eq(almacenProductos.activo, f.activo));
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
