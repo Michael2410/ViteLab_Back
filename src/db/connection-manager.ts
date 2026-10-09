@@ -104,24 +104,41 @@ export class TenantConnectionManager {
       await this.evictOldestIdlePool();
     }
 
-    const host = process.env.DB_HOST || 'localhost';
-    const port = parseInt(process.env.DB_PORT || '5432', 10);
-    const user = process.env.DB_USER || 'fcsadmin';
-    const password = process.env.DB_PASSWORD;
-    const ssl = process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false;
+    let connectionString: string | undefined;
+    if (process.env.DATABASE_URL) {
+      try {
+        const url = new URL(process.env.DATABASE_URL);
+        url.searchParams.delete('channel_binding');
+        if (tenant.database_name) {
+          url.pathname = `/${tenant.database_name}`;
+        }
+        connectionString = url.toString();
+      } catch {
+        connectionString = process.env.DATABASE_URL;
+      }
+    }
 
-    const pool = new Pool({
-      host,
-      port,
-      database: tenant.database_name,
-      user,
-      password,
-      ssl,
-      min: 0,
-      max: this.poolMaxConnections,
-      idleTimeoutMillis: 15000, // Cerrar conexiones PostgreSQL individuales inactivas tras 15s
-      connectionTimeoutMillis: 10000,
-    });
+    const pool = connectionString
+      ? new Pool({
+          connectionString,
+          ssl: { rejectUnauthorized: false },
+          min: 0,
+          max: this.poolMaxConnections,
+          idleTimeoutMillis: 15000,
+          connectionTimeoutMillis: 10000,
+        })
+      : new Pool({
+          host: process.env.DB_HOST || 'localhost',
+          port: parseInt(process.env.DB_PORT || '5432', 10),
+          database: tenant.database_name,
+          user: process.env.DB_USER || 'fcsadmin',
+          password: process.env.DB_PASSWORD,
+          ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+          min: 0,
+          max: this.poolMaxConnections,
+          idleTimeoutMillis: 15000, // Cerrar conexiones PostgreSQL individuales inactivas tras 15s
+          connectionTimeoutMillis: 10000,
+        });
 
     pool.on('error', (err) => {
       console.error(`❌ Error en el pool del tenant [${tenant.slug} / ${tenant.database_name}]:`, err);
